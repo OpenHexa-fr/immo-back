@@ -51,24 +51,25 @@ async def test_search_dpe_calls_paginate_with_built_query() -> None:
 
 async def test_fetch_dpe_pages_stops_on_empty_page(monkeypatch: pytest.MonkeyPatch) -> None:
     class _FakeResponse:
-        def __init__(self, results: list[dict[str, str]]) -> None:
+        def __init__(self, results: list[dict[str, str]], next_url: str | None) -> None:
             self._results = results
+            self._next_url = next_url
 
         def raise_for_status(self) -> None:
             return None
 
-        def json(self) -> dict[str, list[dict[str, str]]]:
-            return {"results": self._results}
+        def json(self) -> dict[str, object]:
+            return {"results": self._results, "next": self._next_url}
 
     call_count = {"n": 0}
 
     async def fake_get(
-        self: httpx.AsyncClient, url: str, params: dict[str, int]
+        self: httpx.AsyncClient, url: str, params: dict[str, int] | None = None
     ) -> _FakeResponse:
         call_count["n"] += 1
         if call_count["n"] == 1:
-            return _FakeResponse([{"numero_dpe": "1"}])
-        return _FakeResponse([])
+            return _FakeResponse([{"numero_dpe": "1"}], "https://example.test/dataset/lines?after=1")
+        return _FakeResponse([], None)
 
     monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
 
@@ -76,3 +77,39 @@ async def test_fetch_dpe_pages_stops_on_empty_page(monkeypatch: pytest.MonkeyPat
 
     assert len(pages) == 1
     assert pages[0][0]["numero_dpe"] == "1"
+
+
+async def test_fetch_dpe_pages_follows_cursor_beyond_first_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _FakeResponse:
+        def __init__(self, results: list[dict[str, str]], next_url: str | None) -> None:
+            self._results = results
+            self._next_url = next_url
+
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"results": self._results, "next": self._next_url}
+
+    requested_urls: list[str] = []
+
+    async def fake_get(
+        self: httpx.AsyncClient, url: str, params: dict[str, int] | None = None
+    ) -> _FakeResponse:
+        requested_urls.append(url)
+        if len(requested_urls) == 1:
+            return _FakeResponse(
+                [{"numero_dpe": "1"}], "https://example.test/dataset/lines?after=cursor1"
+            )
+        if len(requested_urls) == 2:
+            return _FakeResponse([{"numero_dpe": "2"}], None)
+        return _FakeResponse([], None)
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", fake_get)
+
+    pages = [page async for page in fetch_dpe_pages("https://example.test/dataset")]
+
+    assert len(pages) == 2
+    assert requested_urls[1] == "https://example.test/dataset/lines?after=cursor1"

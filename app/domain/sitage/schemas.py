@@ -1,8 +1,9 @@
-"""Modèles Pydantic du domaine Sit@del2 (permis de construire).
+"""Modèles Pydantic du domaine Sitadel (permis de construire).
 
-Schéma défini par hypothèse : Sit@del2 n'est pas détaillé dans le CLAUDE.md du
-projet (contrairement à DVF et DPE). À valider face à la structure réelle des
-fichiers publiés par le SDES.
+Schéma validé face à l'export CSV réel du SDES (plateforme DiDo, "Liste des
+autorisations d'urbanisme créant des logements") : voir le commentaire en tête
+de `ingestion.py` pour le détail des colonnes sources et leurs limites (pas de
+coordonnées géographiques dans la source).
 """
 
 from __future__ import annotations
@@ -20,8 +21,8 @@ class PermisConstruire(BaseDocument):
     numero_permis: str
     date_autorisation: str
     type_permis: str
-    commune: str
-    code_postal: str
+    commune: str | None = None
+    code_postal: str | None = None
     nombre_logements: int | None = None
     surface_plancher: float | None = None
     location: GeoPoint | None = None

@@ -13,7 +13,8 @@ def test_row_to_document_builds_deterministic_id() -> None:
     row = {
         "id_mutation": "2024-1",
         "date_mutation": "2024-01-15",
-        "numero_lot": "001",
+        "numero_disposition": "000001",
+        "lot1_numero": "001",
         "valeur_fonciere": 250000.0,
         "surface_reelle_bati": 80,
         "type_local": "Appartement",
@@ -35,7 +36,8 @@ def test_row_to_document_handles_missing_location() -> None:
     row = {
         "id_mutation": "2024-2",
         "date_mutation": "2024-01-15",
-        "numero_lot": None,
+        "numero_disposition": "000001",
+        "lot1_numero": None,
         "valeur_fonciere": 100000.0,
         "surface_reelle_bati": None,
         "type_local": None,
@@ -50,17 +52,52 @@ def test_row_to_document_handles_missing_location() -> None:
     assert document["location"] is None
 
 
+_RAW_CSV_HEADER = (
+    b"id_mutation,numero_disposition,id_parcelle,code_type_local,date_mutation,"
+    b"valeur_fonciere,surface_reelle_bati,type_local,nom_commune,code_postal,"
+    b"lot1_numero,longitude,latitude"
+)
+
+
 def test_parse_dvf_csv_keeps_only_known_columns() -> None:
     raw_csv = (
-        b"id_mutation,date_mutation,valeur_fonciere,surface_reelle_bati,type_local,"
-        b"nom_commune,code_postal,numero_lot,longitude,latitude,extra_column\n"
-        b"2024-1,2024-01-15,250000.0,80,Appartement,Marseille,13001,001,5.37,43.29,ignored\n"
+        _RAW_CSV_HEADER
+        + b",extra_column\n"
+        + b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,Appartement,Marseille,"
+        b"13001,001,5.37,43.29,ignored\n"
     )
 
     dataframe = parse_dvf_csv(raw_csv)
 
     assert "extra_column" not in dataframe.columns
     assert dataframe.shape[0] == 1
+
+
+def test_parse_dvf_csv_decompresses_gzip_input() -> None:
+    import gzip
+
+    raw_csv = (
+        _RAW_CSV_HEADER + b"\n"
+        b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,Appartement,Marseille,"
+        b"13001,001,5.37,43.29\n"
+    )
+
+    dataframe = parse_dvf_csv(gzip.compress(raw_csv))
+
+    assert dataframe.shape[0] == 1
+
+
+def test_parse_dvf_csv_disambiguates_identical_rows_via_occurrence_index() -> None:
+    row = (
+        b"2025-1,1,33193000AD0001,1,2025-01-07,243596.0,,,Bordeaux,33000,,-0.567,44.84\n"
+    )
+    raw_csv = _RAW_CSV_HEADER + b"\n" + row * 3
+
+    dataframe = parse_dvf_csv(raw_csv)
+    documents = [_row_to_document(r) for r in dataframe.iter_rows(named=True)]
+    ids = [d["_id"] for d in documents]
+
+    assert len(set(ids)) == 3
 
 
 def test_build_dvf_query_returns_match_all_without_filters() -> None:

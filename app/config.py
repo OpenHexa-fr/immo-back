@@ -1,4 +1,19 @@
-"""Configuration de l'API Immo : paramètres Elasticsearch (via core) + sources de données."""
+"""Configuration de l'API Immo : paramètres Elasticsearch (via core) + sources de données.
+
+URLs validées face aux exports réels (voir les docstrings de chaque module
+`ingestion.py`) :
+
+- DVF : fichier national annuel `full.csv.gz`, republié chaque année sous un
+  nouveau millésime (`dvf_year`) ; l'année N n'est pas encore disponible en
+  cours d'année N, d'où un défaut sur le dernier millésime complet.
+- DPE : l'identifiant de dataset ADEME data-fair n'est pas un slug stable
+  ("dpe-v2-logements-existants" renvoie 404) mais un identifiant opaque propre
+  au catalogue ; il doit être re-vérifié périodiquement via
+  `GET https://data.ademe.fr/data-fair/api/v1/datasets?q=DPE` si l'ingestion
+  se met à échouer.
+- Sitadel : distribué via la plateforme DiDo du SDES, pas par téléchargement
+  direct de fichiers statiques.
+"""
 
 from __future__ import annotations
 
@@ -11,9 +26,27 @@ from pydantic_settings import SettingsConfigDict
 class Settings(ESSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    dvf_data_url: str = "https://files.data.gouv.fr/geo-dvf/latest/csv/"
-    dpe_data_url: str = "https://data.ademe.fr/data-fair/api/v1/datasets/dpe-v2-logements-existants/"
-    sitadel_data_url: str = "https://files.data.gouv.fr/sitadel/latest/csv/"
+    dvf_year: int = 2025
+    dvf_data_url: str = ""
+    dpe_data_url: str = (
+        "https://data.ademe.fr/data-fair/api/v1/datasets/meg-83tjwtg8dyz4vv7h1dqe"
+    )
+    sitadel_data_url: str = (
+        "https://data.statistiques.developpement-durable.gouv.fr/dido/api/v1/"
+        "datafiles/8b35affb-55fc-4c1f-915b-7750f974446a/csv"
+    )
+
+    # Sources volumineuses et peu volatiles (mises à jour mensuelles côté
+    # producteurs) : polling nettement moins fréquent que les prix carburants.
+    dvf_polling_interval_seconds: int = 7 * 24 * 3600
+    dpe_polling_interval_seconds: int = 24 * 3600
+    sitadel_polling_interval_seconds: int = 7 * 24 * 3600
+
+    def resolved_dvf_data_url(self) -> str:
+        """URL du fichier DVF national pour `dvf_year`, sauf override explicite."""
+        if self.dvf_data_url:
+            return self.dvf_data_url
+        return f"https://files.data.gouv.fr/geo-dvf/latest/csv/{self.dvf_year}/full.csv.gz"
 
 
 @lru_cache
