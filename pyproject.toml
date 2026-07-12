@@ -1,0 +1,48 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "openhexa-immo-back"
+version = "0.1.0"
+description = "API FastAPI du domaine immobilier OpenHexa (DVF, DPE, Sit@del2)"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = [
+    "openhexa-core>=0.1.0",
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "polars>=0.20",
+    "structlog>=23.0",
+    "pydantic-settings>=2.0",
+    "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+    "ruff>=0.5",
+    "mypy>=1.10",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC"]
+# B008 : faux positif avec le pattern FastAPI Depends()/Query() en valeur par défaut.
+ignore = ["B008"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+plugins = ["pydantic.mypy"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
