@@ -24,6 +24,13 @@ async def search(
     type_local: list[str] | None = Query(None),
     valeur_fonciere_min: float | None = None,
     valeur_fonciere_max: float | None = None,
+    surface_min: int | None = None,
+    surface_max: int | None = None,
+    etiquette_dpe: list[str] | None = Query(None),
+    lat: float | None = None,
+    lon: float | None = None,
+    radius_km: float = 10.0,
+    tri: str | None = None,
     search_after: list[str] | None = Query(None),
     size: int = 20,
     client: AsyncElasticsearch = Depends(_es_client),
@@ -36,6 +43,13 @@ async def search(
         type_local=type_local,
         valeur_fonciere_min=valeur_fonciere_min,
         valeur_fonciere_max=valeur_fonciere_max,
+        surface_min=surface_min,
+        surface_max=surface_max,
+        etiquette_dpe=etiquette_dpe,
+        lat=lat,
+        lon=lon,
+        radius_km=radius_km,
+        tri=tri,
     )
     index = f"{settings.es_index_prefix}-dvf"
     page = await search_dvf(client, index, params, search_after=search_after, size=size)

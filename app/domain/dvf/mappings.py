@@ -14,5 +14,6 @@ DVF_MAPPING: dict[str, Any] = {
         "commune": KEYWORD,
         "code_postal": KEYWORD,
         "location": GEO_POINT,
+        "etiquette_dpe": KEYWORD,
     }
 }

@@ -20,6 +20,7 @@ class DVFTransaction(BaseDocument):
     commune: str
     code_postal: str
     location: GeoPoint | None = None
+    etiquette_dpe: str | None = None
 
 
 class DVFSearchParams(BaseModel):
@@ -28,6 +29,13 @@ class DVFSearchParams(BaseModel):
     type_local: list[str] | None = None
     valeur_fonciere_min: float | None = None
     valeur_fonciere_max: float | None = None
+    surface_min: int | None = None
+    surface_max: int | None = None
+    etiquette_dpe: list[str] | None = None
+    lat: float | None = None
+    lon: float | None = None
+    radius_km: float = 10.0
+    tri: str | None = None
 
 
 class DVFSearchResponse(BasePaginatedResponse[DVFTransaction]):

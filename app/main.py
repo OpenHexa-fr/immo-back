@@ -10,10 +10,11 @@ from contextlib import asynccontextmanager
 import structlog
 from elasticsearch import AsyncElasticsearch
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from openhexa_core.elasticsearch.client import close_client, get_client
 from openhexa_core.elasticsearch.index import create_index, ensure_alias
 
-from app.api.v1 import dpe, dvf, sitage
+from app.api.v1 import dpe, dvf, sitage, status
 from app.config import Settings, get_settings
 from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dpe.mappings import DPE_MAPPING
@@ -100,6 +101,15 @@ def _start_polling_tasks(
 
 
 app = FastAPI(title="OpenHexa Immo API", lifespan=lifespan)
+# API publique en lecture seule (données ouvertes, pas de cookies/session) :
+# CORS permissif nécessaire puisque le frontend est servi sur une origine distincte.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
 app.include_router(dvf.router, prefix="/api/v1")
 app.include_router(dpe.router, prefix="/api/v1")
 app.include_router(sitage.router, prefix="/api/v1")
+app.include_router(status.router, prefix="/api/v1")
