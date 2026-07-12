@@ -78,6 +78,23 @@ def test_parse_sitadel_csv_reads_semicolon_delimited_columns() -> None:
     assert dataframe.shape[0] == 1
 
 
+def test_parse_sitadel_csv_keeps_comm_and_codpost_as_string() -> None:
+    # COMM (code INSEE) et ADR_CODPOST_TER sont numériques dans le CSV réel :
+    # sans schema_overrides explicite, polars les infère en entier, tronquant
+    # le zéro initial (même bug que sur DVF, voir test_dvf.py).
+    raw_csv = (
+        b'"NUM_DAU";"DATE_REELLE_AUTORISATION";"TYPE_DAU";"COMM";"ADR_LOCALITE_TER";'
+        b'"ADR_CODPOST_TER";"NB_LGT_TOT_CREES";"SURF_HAB_CREEE"\n'
+        b'"00100113V0003";"2013-09-20";"PC";01001;"L ABERGEMENT-CLEMENCIAT";01400;1;90.0\n'
+    )
+
+    dataframe = parse_sitadel_csv(raw_csv)
+    row = next(iter(dataframe.iter_rows(named=True)))
+
+    assert row["COMM"] == "01001"
+    assert row["ADR_CODPOST_TER"] == "01400"
+
+
 def test_build_sitadel_query_returns_match_all_without_filters() -> None:
     assert _build_sitadel_query(SitadelSearchParams()) == {"match_all": {}}
 

@@ -64,6 +64,12 @@ def parse_sitadel_csv(raw_csv: bytes) -> pl.DataFrame:
         io.BytesIO(raw_csv),
         columns=_SITADEL_COLUMNS,
         separator=";",
+        # COMM (code INSEE) et ADR_CODPOST_TER sont numériques dans le CSV réel :
+        # sans forcer Utf8, polars les infère en entier, ce qui fait échouer la
+        # validation Pydantic de l'API (`code_postal`/`commune`: str) et
+        # tronquerait le zéro initial des codes commençant par 0 (même bug que
+        # sur DVF, voir `dvf/ingestion.py`).
+        schema_overrides={"COMM": pl.Utf8, "ADR_CODPOST_TER": pl.Utf8},
         infer_schema_length=10_000,
         ignore_errors=True,
     )

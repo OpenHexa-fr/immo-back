@@ -86,7 +86,16 @@ def parse_dvf_csv(raw_csv: bytes) -> pl.DataFrame:
     if raw_csv[:2] == b"\x1f\x8b":
         raw_csv = gzip.decompress(raw_csv)
     dataframe = pl.read_csv(
-        io.BytesIO(raw_csv), columns=_DVF_COLUMNS, infer_schema_length=10_000, ignore_errors=True
+        io.BytesIO(raw_csv),
+        columns=_DVF_COLUMNS,
+        # `code_postal` a l'air numérique dans le CSV réel (ex: "59170") : sans
+        # forcer Utf8, polars l'infère en entier, ce qui (a) fait échouer la
+        # validation Pydantic de l'API (`code_postal: str`, 500 vérifié en
+        # conditions réelles) et (b) tronquerait le zéro initial des codes
+        # postaux commençant par 0 (ex: département de l'Ain, "01180" -> 1180).
+        schema_overrides={"code_postal": pl.Utf8},
+        infer_schema_length=10_000,
+        ignore_errors=True,
     )
     return dataframe.with_columns(
         pl.int_range(pl.len()).over(_DEDUP_KEY_COLUMNS).alias("_occurrence")

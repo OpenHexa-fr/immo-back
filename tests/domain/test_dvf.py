@@ -73,6 +73,25 @@ def test_parse_dvf_csv_keeps_only_known_columns() -> None:
     assert dataframe.shape[0] == 1
 
 
+def test_parse_dvf_csv_keeps_code_postal_as_string() -> None:
+    # Vu en conditions réelles : code_postal est numérique dans le CSV source
+    # ("59170"), donc inféré en entier par polars sans un schema_overrides
+    # explicite. Une chaîne à zéro initial (départment de l'Ain) prouve à la
+    # fois que le type est bien str ET que le zéro n'est pas tronqué.
+    raw_csv = (
+        _RAW_CSV_HEADER
+        + b"\n"
+        + b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,Appartement,Bourg,"
+        b"01000,001,5.37,43.29\n"
+    )
+
+    dataframe = parse_dvf_csv(raw_csv)
+    row = next(iter(dataframe.iter_rows(named=True)))
+
+    assert row["code_postal"] == "01000"
+    assert isinstance(row["code_postal"], str)
+
+
 def test_parse_dvf_csv_decompresses_gzip_input() -> None:
     import gzip
 
