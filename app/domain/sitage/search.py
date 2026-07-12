@@ -30,7 +30,7 @@ async def search_sitadel(
 ) -> dict[str, Any]:
     """Recherche des permis de construire selon `params`, paginée par `search_after`."""
     query = _build_sitadel_query(params)
-    sort = [{"date_autorisation": "desc"}, {"_id": "asc"}]
+    sort = [{"date_autorisation": "desc"}, {"_seq_no": "asc"}]
     return await paginate(
         client, index=index, query=query, sort=sort, search_after=search_after, size=size
     )

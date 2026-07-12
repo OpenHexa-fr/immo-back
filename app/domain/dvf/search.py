@@ -39,7 +39,7 @@ async def search_dvf(
 ) -> dict[str, Any]:
     """Recherche des transactions DVF selon `params`, paginée par `search_after`."""
     query = _build_dvf_query(params)
-    sort = [{"date_mutation": "desc"}, {"_id": "asc"}]
+    sort = [{"date_mutation": "desc"}, {"_seq_no": "asc"}]
     return await paginate(
         client, index=index, query=query, sort=sort, search_after=search_after, size=size
     )

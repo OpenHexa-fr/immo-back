@@ -7,7 +7,7 @@ WORKDIR /app
 COPY core/ /core/
 RUN pip install --no-cache-dir /core
 
-COPY immo-back/pyproject.toml .
+COPY immo-back/pyproject.toml immo-back/README.md ./
 RUN pip install --no-cache-dir -e .
 
 COPY immo-back/app/ app/
