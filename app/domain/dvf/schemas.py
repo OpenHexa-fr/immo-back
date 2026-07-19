@@ -18,7 +18,7 @@ class DVFTransaction(BaseDocument):
     surface_reelle_bati: int | None = None
     type_local: str | None = None
     commune: str
-    code_postal: str
+    code_postal: str | None = None
     location: GeoPoint | None = None
     etiquette_dpe: str | None = None
 
