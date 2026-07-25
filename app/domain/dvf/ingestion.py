@@ -48,13 +48,27 @@ _DVF_COLUMNS = [
     "date_mutation",
     "valeur_fonciere",
     "surface_reelle_bati",
+    "surface_terrain",
+    "nombre_pieces_principales",
     "type_local",
     "nom_commune",
     "code_postal",
+    "code_departement",
+    "code_commune",
+    "adresse_numero",
+    "adresse_suffixe",
+    "adresse_nom_voie",
     "lot1_numero",
     "longitude",
     "latitude",
 ]
+
+# Longueur du préfixe d'`id_parcelle` identifiant la section cadastrale (commune
+# INSEE sur 5 caractères + préfixe de commune associée sur 3 caractères + lettres
+# de section sur 2 caractères), le numéro de parcelle (4 derniers caractères) en
+# étant exclu. Permet de regrouper les mutations par section sans dépendre d'une
+# colonne dédiée, absente du CSV source.
+_SECTION_PREFIX_LENGTH = 10
 
 _DEDUP_KEY_COLUMNS = [
     "id_mutation",
@@ -88,24 +102,65 @@ def parse_dvf_csv(raw_csv: bytes) -> pl.DataFrame:
     dataframe = pl.read_csv(
         io.BytesIO(raw_csv),
         columns=_DVF_COLUMNS,
-        # `code_postal` a l'air numérique dans le CSV réel (ex: "59170") : sans
-        # forcer Utf8, polars l'infère en entier, ce qui (a) fait échouer la
-        # validation Pydantic de l'API (`code_postal: str`, 500 vérifié en
-        # conditions réelles) et (b) tronquerait le zéro initial des codes
-        # postaux commençant par 0 (ex: département de l'Ain, "01180" -> 1180).
-        schema_overrides={"code_postal": pl.Utf8},
+        # `code_postal`, `code_commune` et `code_departement` ont l'air numériques
+        # dans le CSV réel (ex: "59170", "59350", "01") : sans forcer Utf8, polars
+        # les infère en entier, ce qui (a) fait échouer la validation Pydantic de
+        # l'API (`str`, 500 vérifié en conditions réelles) et (b) tronquerait le
+        # zéro initial des codes commençant par 0 (ex: département de l'Ain,
+        # "01180" -> 1180, "01053" -> 1053).
+        schema_overrides={
+            "code_postal": pl.Utf8,
+            "code_departement": pl.Utf8,
+            "code_commune": pl.Utf8,
+        },
         infer_schema_length=10_000,
         ignore_errors=True,
     )
+    # `valeur_fonciere` est nominalement obligatoire dans le CSV source, mais
+    # certaines lignes réelles la laissent vide : sans ce filtre, ces
+    # documents indexés avec `valeur_fonciere: null` font échouer la
+    # validation Pydantic (`float` non optionnel) au moment de la recherche.
+    dataframe = dataframe.filter(pl.col("valeur_fonciere").is_not_null())
     return dataframe.with_columns(
         pl.int_range(pl.len()).over(_DEDUP_KEY_COLUMNS).alias("_occurrence")
     )
+
+
+def _compute_prix_m2(
+    valeur_fonciere: float | None, surface_bati: int | None, surface_terrain: int | None
+) -> float | None:
+    """Prix au m² : surface bâtie si disponible, sinon surface du terrain (cas des ventes de terrains nus).
+
+    `valeur_fonciere` est nominalement obligatoire mais certaines lignes du CSV
+    source réel la laissent vide (vu en conditions réelles : `TypeError` sur la
+    division sans ce garde), d'où le typage optionnel malgré le schéma Pydantic.
+    """
+    if not valeur_fonciere:
+        return None
+    surface = surface_bati if surface_bati else surface_terrain
+    if not surface:
+        return None
+    return round(valeur_fonciere / surface, 2)
+
+
+def _compute_adresse(row: dict[str, Any]) -> str | None:
+    """Adresse composée à partir des colonnes numéro/suffixe/voie du CSV source."""
+    nom_voie = row.get("adresse_nom_voie")
+    if not nom_voie:
+        return None
+    numero = row.get("adresse_numero")
+    suffixe = row.get("adresse_suffixe") or ""
+    prefix = f"{int(numero)}{suffixe} " if numero else ""
+    return f"{prefix}{nom_voie}"
 
 
 def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
     location = None
     if row.get("latitude") is not None and row.get("longitude") is not None:
         location = {"lat": row["latitude"], "lon": row["longitude"]}
+
+    id_parcelle = row.get("id_parcelle") or None
+    code_section = id_parcelle[:_SECTION_PREFIX_LENGTH] if id_parcelle else None
 
     return {
         "_id": make_document_id(
@@ -120,9 +175,19 @@ def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
         "date_mutation": row["date_mutation"],
         "valeur_fonciere": row["valeur_fonciere"],
         "surface_reelle_bati": row.get("surface_reelle_bati"),
+        "surface_terrain": row.get("surface_terrain"),
+        "nombre_pieces_principales": row.get("nombre_pieces_principales"),
         "type_local": row.get("type_local"),
         "commune": row["nom_commune"],
         "code_postal": row["code_postal"],
+        "code_departement": row.get("code_departement"),
+        "code_commune": row.get("code_commune"),
+        "code_section": code_section,
+        "id_parcelle": id_parcelle,
+        "adresse": _compute_adresse(row),
+        "prix_m2": _compute_prix_m2(
+            row["valeur_fonciere"], row.get("surface_reelle_bati"), row.get("surface_terrain")
+        ),
         "location": location,
     }
 
@@ -130,11 +195,34 @@ def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
 async def ingest_dvf(
     client: AsyncElasticsearch, index_alias: str, source_url: str
 ) -> tuple[int, int]:
-    """Télécharge, parse et indexe les transactions DVF depuis `source_url`."""
+    """Télécharge, parse et indexe les transactions DVF depuis `source_url` (un millésime)."""
     raw_csv = await fetch_dvf_csv(source_url)
     dataframe = parse_dvf_csv(raw_csv)
     documents = (_row_to_document(row) for row in dataframe.iter_rows(named=True))
 
     success, errors = await bulk_index(client, index_alias, documents)
-    logger.info("dvf_ingestion_completed", success=success, errors=errors)
+    logger.info("dvf_ingestion_completed", source_url=source_url, success=success, errors=errors)
     return success, errors
+
+
+async def ingest_dvf_years(
+    client: AsyncElasticsearch, index_alias: str, source_urls: list[str]
+) -> tuple[int, int]:
+    """Ingère séquentiellement plusieurs millésimes DVF (un par URL).
+
+    L'échec d'un millésime (ex. fichier pas encore publié, incident réseau
+    ponctuel) n'interrompt pas les autres : chaque téléchargement pouvant
+    dépasser une centaine de Mo, une erreur transitoire sur l'un d'eux ne doit
+    pas priver les autres millésimes, déjà disponibles, de mise à jour.
+    """
+    total_success = 0
+    total_errors = 0
+    for source_url in source_urls:
+        try:
+            success, errors = await ingest_dvf(client, index_alias, source_url)
+        except Exception:  # noqa: BLE001 - un millésime en échec ne doit pas bloquer les autres
+            logger.exception("dvf_year_ingestion_failed", source_url=source_url)
+            continue
+        total_success += success
+        total_errors += errors
+    return total_success, total_errors

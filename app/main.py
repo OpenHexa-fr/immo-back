@@ -18,7 +18,7 @@ from app.api.v1 import dpe, dvf, sitage, status
 from app.config import Settings, get_settings
 from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dpe.mappings import DPE_MAPPING
-from app.domain.dvf.ingestion import ingest_dvf
+from app.domain.dvf.ingestion import ingest_dvf_years
 from app.domain.dvf.mappings import DVF_MAPPING
 from app.domain.sitage.ingestion import ingest_sitadel
 from app.domain.sitage.mappings import SITADEL_MAPPING
@@ -79,7 +79,7 @@ def _start_polling_tasks(
         asyncio.create_task(
             _polling_loop(
                 "dvf",
-                lambda: ingest_dvf(client, f"{prefix}-dvf", settings.resolved_dvf_data_url()),
+                lambda: ingest_dvf_years(client, f"{prefix}-dvf", settings.resolved_dvf_data_urls()),
                 settings.dvf_polling_interval_seconds,
             )
         ),

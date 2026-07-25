@@ -3,9 +3,12 @@
 URLs validées face aux exports réels (voir les docstrings de chaque module
 `ingestion.py`) :
 
-- DVF : fichier national annuel `full.csv.gz`, republié chaque année sous un
-  nouveau millésime (`dvf_year`) ; l'année N n'est pas encore disponible en
-  cours d'année N, d'où un défaut sur le dernier millésime complet.
+- DVF : un fichier national annuel `full.csv.gz` par millésime. Le mirroir
+  `geo-dvf/latest` ne conserve que les cinq derniers millésimes glissants (à ce
+  jour : 2021 à 2025, vérifié via l'index `https://files.data.gouv.fr/geo-dvf/
+  latest/csv/` — les années antérieures y renvoient 404) ; l'année N n'est pas
+  encore disponible en cours d'année N, d'où un défaut sur le dernier
+  millésime complet.
 - DPE : l'identifiant de dataset ADEME data-fair n'est pas un slug stable
   ("dpe-v2-logements-existants" renvoie 404) mais un identifiant opaque propre
   au catalogue ; il doit être re-vérifié périodiquement via
@@ -26,7 +29,8 @@ from pydantic_settings import SettingsConfigDict
 class Settings(ESSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
-    dvf_year: int = 2025
+    dvf_year_start: int = 2021
+    dvf_year_end: int = 2025
     dvf_data_url: str = ""
     dpe_data_url: str = (
         "https://data.ademe.fr/data-fair/api/v1/datasets/meg-83tjwtg8dyz4vv7h1dqe"
@@ -42,11 +46,15 @@ class Settings(ESSettings):
     dpe_polling_interval_seconds: int = 24 * 3600
     sitadel_polling_interval_seconds: int = 7 * 24 * 3600
 
-    def resolved_dvf_data_url(self) -> str:
-        """URL du fichier DVF national pour `dvf_year`, sauf override explicite."""
+    def resolved_dvf_data_urls(self) -> list[str]:
+        """URLs des fichiers DVF nationaux pour chaque millésime de `dvf_year_start` à
+        `dvf_year_end` inclus, sauf override explicite (une seule URL)."""
         if self.dvf_data_url:
-            return self.dvf_data_url
-        return f"https://files.data.gouv.fr/geo-dvf/latest/csv/{self.dvf_year}/full.csv.gz"
+            return [self.dvf_data_url]
+        return [
+            f"https://files.data.gouv.fr/geo-dvf/latest/csv/{year}/full.csv.gz"
+            for year in range(self.dvf_year_start, self.dvf_year_end + 1)
+        ]
 
 
 @lru_cache
