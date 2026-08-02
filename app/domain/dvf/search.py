@@ -18,6 +18,11 @@ def _build_dvf_query(params: DVFSearchParams) -> dict[str, Any]:
         type_local=params.type_local,
         etiquette_dpe=params.etiquette_dpe,
     )
+    # Certaines mutations DVF n'ont pas de valeur foncière renseignée (ex.
+    # cessions sans prix) : `DVFTransaction.valeur_fonciere` est un champ
+    # requis côté API, donc on les exclut plutôt que de faire échouer la
+    # validation de la réponse.
+    filters.append({"exists": {"field": "valeur_fonciere"}})
 
     price_range: dict[str, Any] = {}
     if params.valeur_fonciere_min is not None:

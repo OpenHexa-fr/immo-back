@@ -246,8 +246,10 @@ async def test_ingest_dvf_years_continues_past_a_failing_year() -> None:
     assert mocked.call_count == 2
 
 
-def test_build_dvf_query_returns_match_all_without_filters() -> None:
-    assert _build_dvf_query(DVFSearchParams()) == {"match_all": {}}
+def test_build_dvf_query_excludes_mutations_without_valeur_fonciere_by_default() -> None:
+    assert _build_dvf_query(DVFSearchParams()) == {
+        "bool": {"filter": [{"exists": {"field": "valeur_fonciere"}}]}
+    }
 
 
 def test_build_dvf_query_combines_filters_and_range() -> None:
