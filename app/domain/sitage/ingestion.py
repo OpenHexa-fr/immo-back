@@ -21,6 +21,7 @@ cette ambiguïté.
 
 from __future__ import annotations
 
+import asyncio
 import io
 from typing import Any
 
@@ -94,7 +95,9 @@ async def ingest_sitadel(
 ) -> tuple[int, int]:
     """Télécharge, parse et indexe les permis de construire depuis `source_url`."""
     raw_csv = await fetch_sitadel_csv(source_url)
-    dataframe = parse_sitadel_csv(raw_csv)
+    # Parsing Polars CPU-bound synchrone (fichier national, plusieurs centaines
+    # de Mo) : voir le commentaire équivalent dans dvf/ingestion.py::ingest_dvf.
+    dataframe = await asyncio.to_thread(parse_sitadel_csv, raw_csv)
     documents = (_row_to_document(row) for row in dataframe.iter_rows(named=True))
 
     success, errors = await bulk_index(client, index_alias, documents)

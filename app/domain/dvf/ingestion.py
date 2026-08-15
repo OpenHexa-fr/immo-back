@@ -28,6 +28,7 @@ pour un millésime déjà publié).
 
 from __future__ import annotations
 
+import asyncio
 import gzip
 import io
 from typing import Any
@@ -197,7 +198,11 @@ async def ingest_dvf(
 ) -> tuple[int, int]:
     """Télécharge, parse et indexe les transactions DVF depuis `source_url` (un millésime)."""
     raw_csv = await fetch_dvf_csv(source_url)
-    dataframe = parse_dvf_csv(raw_csv)
+    # `parse_dvf_csv` est un parsing Polars CPU-bound synchrone (fichier national,
+    # potentiellement plusieurs centaines de Mo) : exécuté tel quel dans une
+    # coroutine, il gèle tout le event loop (donc toutes les requêtes HTTP en
+    # cours) pendant toute sa durée. `to_thread` le sort du thread principal.
+    dataframe = await asyncio.to_thread(parse_dvf_csv, raw_csv)
     documents = (_row_to_document(row) for row in dataframe.iter_rows(named=True))
 
     success, errors = await bulk_index(client, index_alias, documents)

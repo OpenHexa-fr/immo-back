@@ -13,6 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from openhexa_core.elasticsearch.client import close_client, get_client
 from openhexa_core.elasticsearch.index import create_index, ensure_alias
+from openhexa_core.elasticsearch.search import count
 
 from app.api.v1 import dpe, dvf, sitage, status
 from app.config import Settings, get_settings
@@ -32,18 +33,49 @@ _DOMAIN_MAPPINGS = {
 }
 
 
+async def _index_has_data(client: AsyncElasticsearch, index_alias: str) -> bool:
+    """True si `index_alias` contient déjà au moins un document.
+
+    Avec `min-replicas: 0` (scale-to-zero), le process redémarre à chaque cold
+    start : sans ce check, l'ingestion initiale (téléchargement + parsing d'un
+    fichier national potentiellement volumineux) repartirait de zéro à chaque
+    fois alors que les données sont déjà indexées. Si le comptage échoue
+    (cluster injoignable, alias pas encore créé), on retente l'ingestion par
+    prudence plutôt que de la sauter à tort.
+    """
+    try:
+        return await count(client, index_alias) > 0
+    except Exception:  # noqa: BLE001 - le comptage ne doit jamais bloquer/casser le polling
+        return False
+
+
 async def _polling_loop(
     name: str,
     ingest: Callable[[], Awaitable[tuple[int, int]]],
     interval_seconds: int,
+    *,
+    skip_initial_run: Callable[[], Awaitable[bool]] | None = None,
 ) -> None:
-    """Interroge périodiquement une source et réindexe, sans jamais s'arrêter sur erreur."""
-    while True:
+    """Interroge périodiquement une source et réindexe, sans jamais s'arrêter sur erreur.
+
+    Si `skip_initial_run` est fourni et retourne True (typiquement : l'index a
+    déjà des données), le premier run immédiat est sauté au profit du prochain
+    intervalle — voir `_index_has_data`.
+    """
+    if skip_initial_run is not None and await skip_initial_run():
+        logger.info(f"{name}_polling_initial_run_skipped", reason="index_already_populated")
+    else:
         try:
             await ingest()
         except Exception:  # noqa: BLE001 - le polling ne doit jamais s'arrêter sur une erreur réseau
             logger.exception(f"{name}_polling_failed")
+
+    while True:
         await asyncio.sleep(interval_seconds)
+        try:
+            await ingest()
+        except Exception:  # noqa: BLE001 - le polling ne doit jamais s'arrêter sur une erreur réseau
+            logger.exception(f"{name}_polling_failed")
 
 
 @asynccontextmanager
@@ -75,26 +107,30 @@ def _start_polling_tasks(
     client: AsyncElasticsearch, settings: Settings
 ) -> list[asyncio.Task[None]]:
     prefix = settings.es_index_prefix
+    dvf_alias, dpe_alias, sitadel_alias = f"{prefix}-dvf", f"{prefix}-dpe", f"{prefix}-sitage"
     return [
         asyncio.create_task(
             _polling_loop(
                 "dvf",
-                lambda: ingest_dvf_years(client, f"{prefix}-dvf", settings.resolved_dvf_data_urls()),
+                lambda: ingest_dvf_years(client, dvf_alias, settings.resolved_dvf_data_urls()),
                 settings.dvf_polling_interval_seconds,
+                skip_initial_run=lambda: _index_has_data(client, dvf_alias),
             )
         ),
         asyncio.create_task(
             _polling_loop(
                 "dpe",
-                lambda: ingest_dpe(client, f"{prefix}-dpe", settings.dpe_data_url),
+                lambda: ingest_dpe(client, dpe_alias, settings.dpe_data_url),
                 settings.dpe_polling_interval_seconds,
+                skip_initial_run=lambda: _index_has_data(client, dpe_alias),
             )
         ),
         asyncio.create_task(
             _polling_loop(
                 "sitadel",
-                lambda: ingest_sitadel(client, f"{prefix}-sitage", settings.sitadel_data_url),
+                lambda: ingest_sitadel(client, sitadel_alias, settings.sitadel_data_url),
                 settings.sitadel_polling_interval_seconds,
+                skip_initial_run=lambda: _index_has_data(client, sitadel_alias),
             )
         ),
     ]
