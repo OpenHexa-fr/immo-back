@@ -1,0 +1,22 @@
+# Image de déploiement (Azure Container Apps / CI GitHub Actions) : le contexte
+# de build est ce repo seul (checkout GitHub), contrairement à Dockerfile qui
+# suppose un contexte monorepo pour le dev local (docker-compose, core/ en local).
+#
+# openhexa-core n'étant pas encore publié sur PyPI, on l'installe ici depuis
+# GitHub. Une fois publié sur PyPI, supprimer la ligne `pip install git+...`
+# ci-dessous : le `openhexa-core>=0.1.0` du pyproject.toml suffira alors, et ce
+# fichier deviendra identique à Dockerfile (les deux pourront fusionner).
+FROM python:3.11-slim
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends git \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir "git+https://github.com/OpenHexa-fr/core.git@main"
+
+COPY pyproject.toml README.md ./
+RUN pip install --no-cache-dir -e .
+
+COPY app/ app/
+
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
