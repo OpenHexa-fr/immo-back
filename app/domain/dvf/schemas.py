@@ -101,9 +101,16 @@ class PrixCarteBucket(BaseModel):
     code: str
     label: str
     prix_m2_median: float
+    # Absents de l'agrégation à la volée servant de repli, présents dès que les
+    # zones sont pré-agrégées.
+    prix_m2_p25: float | None = None
+    prix_m2_p75: float | None = None
     nb_mutations: int
 
 
 class PrixCarteResponse(BaseModel):
     niveau: str
     buckets: list[PrixCarteBucket]
+    # Date du dernier calcul des zones — `None` quand la réponse vient du repli
+    # à la volée. Destiné à servir de version de données (ETag, invalidation).
+    calcule_le: str | None = None

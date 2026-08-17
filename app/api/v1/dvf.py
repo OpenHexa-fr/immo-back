@@ -23,6 +23,7 @@ from app.domain.dvf.search import (
     get_dvf_by_mutation,
     search_dvf,
 )
+from app.domain.dvf.zones import fetch_zones
 
 router = APIRouter(prefix="/dvf", tags=["dvf"])
 
@@ -109,7 +110,12 @@ async def prix_carte(
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> PrixCarteResponse:
-    """Prix médian au m² agrégé par zone, pour la choroplèthe de la carte.
+    """Prix médian au m² par zone, pour la choroplèthe de la carte.
+
+    Servi depuis l'index de zones pré-agrégé, alimenté à l'issue de chaque
+    ingestion DVF. Tant que ce calcul n'a jamais tourné (premier déploiement,
+    index vide), on retombe sur l'agrégation à la volée : la carte reste
+    fonctionnelle, simplement plus lente.
 
     Chaque niveau de zoom doit être filtré par le niveau parent pour éviter
     d'agréger la France entière en une seule requête.
@@ -119,12 +125,23 @@ async def prix_carte(
     if niveau == "section" and not code_commune:
         raise HTTPException(400, "code_commune est requis pour niveau=section")
 
-    index = f"{settings.es_index_prefix}-dvf"
-    buckets = await aggregate_prix_carte(
-        client, index, niveau, code_departement=code_departement, code_commune=code_commune
+    code_parent = code_departement if niveau == "commune" else code_commune
+    buckets = await fetch_zones(
+        client, f"{settings.es_index_prefix}-dvf-zones", niveau, code_parent=code_parent
     )
+    if not buckets:
+        buckets = await aggregate_prix_carte(
+            client,
+            f"{settings.es_index_prefix}-dvf",
+            niveau,
+            code_departement=code_departement,
+            code_commune=code_commune,
+        )
+
     return PrixCarteResponse(
-        niveau=niveau, buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets]
+        niveau=niveau,
+        buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets],
+        calcule_le=next((bucket.get("calcule_le") for bucket in buckets), None),
     )
 
 

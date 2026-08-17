@@ -21,7 +21,8 @@ from app.config import Settings, get_settings
 from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dpe.mappings import DPE_MAPPING
 from app.domain.dvf.ingestion import ingest_dvf_years
-from app.domain.dvf.mappings import DVF_MAPPING
+from app.domain.dvf.mappings import DVF_MAPPING, DVF_ZONES_MAPPING
+from app.domain.dvf.zones import compute_zones, zones_are_computed
 from app.domain.sitage.ingestion import ingest_sitadel
 from app.domain.sitage.mappings import SITADEL_MAPPING
 
@@ -31,6 +32,9 @@ _DOMAIN_MAPPINGS = {
     "dvf": DVF_MAPPING,
     "dpe": DPE_MAPPING,
     "sitage": SITADEL_MAPPING,
+    # Pas une source ingérée mais un index dérivé de `dvf`, alimenté par
+    # `compute_zones` : il suit néanmoins la même convention index+alias.
+    "dvf-zones": DVF_ZONES_MAPPING,
 }
 
 
@@ -104,16 +108,50 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("immo_api_stopped")
 
 
+async def _ingest_dvf_then_zones(
+    client: AsyncElasticsearch, dvf_alias: str, zones_alias: str, source_urls: list[str]
+) -> tuple[int, int]:
+    """Ingère les millésimes DVF puis recalcule les agrégats de zones qui en dérivent."""
+    result = await ingest_dvf_years(client, dvf_alias, source_urls)
+    await compute_zones(client, dvf_alias, zones_alias)
+    return result
+
+
+async def _compute_zones_if_missing(
+    client: AsyncElasticsearch, dvf_alias: str, zones_alias: str
+) -> None:
+    """Calcule les zones au démarrage si elles manquent alors que DVF est peuplé.
+
+    Sans ce rattrapage, un déploiement introduisant l'index de zones attendrait
+    la prochaine ingestion DVF — soit jusqu'à une semaine — pour disposer d'une
+    choroplèthe, puisque `_index_has_data` fait justement sauter l'ingestion
+    initiale quand DVF contient déjà des documents.
+    """
+    try:
+        if not await _index_has_data(client, dvf_alias):
+            return
+        if await zones_are_computed(client, zones_alias):
+            return
+        logger.info("dvf_zones_backfill_started")
+        await compute_zones(client, dvf_alias, zones_alias)
+    except Exception:  # noqa: BLE001 - un rattrapage raté ne doit pas empêcher l'API de servir
+        logger.exception("dvf_zones_backfill_failed")
+
+
 def _start_polling_tasks(
     client: AsyncElasticsearch, settings: Settings
 ) -> list[asyncio.Task[None]]:
     prefix = settings.es_index_prefix
     dvf_alias, dpe_alias, sitadel_alias = f"{prefix}-dvf", f"{prefix}-dpe", f"{prefix}-sitage"
+    zones_alias = f"{prefix}-dvf-zones"
     return [
+        asyncio.create_task(_compute_zones_if_missing(client, dvf_alias, zones_alias)),
         asyncio.create_task(
             _polling_loop(
                 "dvf",
-                lambda: ingest_dvf_years(client, dvf_alias, settings.resolved_dvf_data_urls()),
+                lambda: _ingest_dvf_then_zones(
+                    client, dvf_alias, zones_alias, settings.resolved_dvf_data_urls()
+                ),
                 settings.dvf_polling_interval_seconds,
                 skip_initial_run=lambda: _index_has_data(client, dvf_alias),
             )
