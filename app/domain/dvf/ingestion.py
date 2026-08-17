@@ -130,7 +130,9 @@ def parse_dvf_csv(raw_csv: bytes) -> pl.DataFrame:
 def _compute_prix_m2(
     valeur_fonciere: float | None, surface_bati: int | None, surface_terrain: int | None
 ) -> float | None:
-    """Prix au m² : surface bâtie si disponible, sinon surface du terrain (cas des ventes de terrains nus).
+    """Prix au m² : surface bâtie si disponible, sinon surface du terrain.
+
+    Le repli sur la surface du terrain couvre les ventes de terrains nus.
 
     `valeur_fonciere` est nominalement obligatoire mais certaines lignes du CSV
     source réel la laissent vide (vu en conditions réelles : `TypeError` sur la
