@@ -147,6 +147,54 @@ async def get_dvf_by_mutation(
     return list(response["hits"]["hits"])
 
 
+# Une même mutation porte rarement plus de quelques lots ; la borne existe pour
+# éviter qu'une mutation pathologique (lotissement entier) ne fasse exploser la
+# réponse.
+_MAX_LOTS_PER_MUTATION = 50
+
+
+async def get_parcelle_mutations(
+    client: AsyncElasticsearch, index: str, id_parcelle: str, size: int = 50
+) -> list[dict[str, Any]]:
+    """Retourne les mutations d'une parcelle, chacune portant ses lots.
+
+    Le regroupement par mutation est fait par Elasticsearch (`collapse` +
+    `inner_hits`) plutôt qu'en rapatriant tous les lots pour les regrouper côté
+    client : `size` borne alors un nombre de *mutations*, ce qui est la mesure
+    qu'affiche la fiche parcelle, et non un nombre de lots dont on ne sait pas
+    combien de mutations il couvre.
+    """
+    response = await client.search(
+        index=index,
+        query={
+            "bool": {
+                "filter": [
+                    {"term": {"id_parcelle": id_parcelle}},
+                    {"exists": {"field": "valeur_fonciere"}},
+                ]
+            }
+        },
+        collapse={
+            "field": "id_mutation",
+            "inner_hits": {"name": "lots", "size": _MAX_LOTS_PER_MUTATION},
+        },
+        sort=[{"date_mutation": "desc"}],
+        size=size,
+    )
+
+    mutations: list[dict[str, Any]] = []
+    for hit in response["hits"]["hits"]:
+        lots = [lot["_source"] for lot in hit["inner_hits"]["lots"]["hits"]["hits"]]
+        mutations.append(
+            {
+                "id_mutation": hit["_source"]["id_mutation"],
+                "date_mutation": hit["_source"]["date_mutation"],
+                "lots": lots,
+            }
+        )
+    return mutations
+
+
 # Champ de regroupement par niveau de zoom de la carte des prix : la France
 # entière au niveau département, puis les communes d'un département donné,
 # puis les sections cadastrales d'une commune donnée (`code_section` = les 10

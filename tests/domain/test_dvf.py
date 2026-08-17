@@ -20,6 +20,7 @@ from app.domain.dvf.search import (
     _build_prix_carte_query,
     aggregate_prix_carte,
     get_dvf_by_mutation,
+    get_parcelle_mutations,
     search_dvf,
 )
 
@@ -375,6 +376,50 @@ def test_carte_source_fields_cover_required_transaction_fields() -> None:
     }
 
     assert required <= set(CARTE_SOURCE_FIELDS)
+
+
+async def test_get_parcelle_mutations_groups_lots_by_mutation() -> None:
+    """Le regroupement est fait par Elasticsearch, pas reconstitué côté client."""
+    client = AsyncMock()
+    client.search.return_value = {
+        "hits": {
+            "hits": [
+                {
+                    "_source": {"id_mutation": "2024-1", "date_mutation": "2024-03-02"},
+                    "inner_hits": {
+                        "lots": {
+                            "hits": {
+                                "hits": [
+                                    {"_source": {"id_mutation": "2024-1", "type_local": "Maison"}},
+                                    {"_source": {"id_mutation": "2024-1", "type_local": "Garage"}},
+                                ]
+                            }
+                        }
+                    },
+                }
+            ]
+        }
+    }
+
+    mutations = await get_parcelle_mutations(client, "openhexa-dvf", "59350000AB0112")
+
+    assert len(mutations) == 1
+    assert mutations[0]["id_mutation"] == "2024-1"
+    assert [lot["type_local"] for lot in mutations[0]["lots"]] == ["Maison", "Garage"]
+
+    kwargs = client.search.call_args.kwargs
+    assert kwargs["collapse"]["field"] == "id_mutation"
+    assert {"term": {"id_parcelle": "59350000AB0112"}} in kwargs["query"]["bool"]["filter"]
+
+
+async def test_get_parcelle_mutations_excludes_mutations_without_valeur_fonciere() -> None:
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+
+    await get_parcelle_mutations(client, "openhexa-dvf", "59350000AB0112")
+
+    filters = client.search.call_args.kwargs["query"]["bool"]["filter"]
+    assert {"exists": {"field": "valeur_fonciere"}} in filters
 
 
 async def test_search_dvf_calls_paginate_with_built_query() -> None:
