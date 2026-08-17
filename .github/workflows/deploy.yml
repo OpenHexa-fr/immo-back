@@ -33,3 +33,18 @@ jobs:
             --name ca-immo-back \
             --resource-group rg-openhexa \
             --image acropenhexa.azurecr.io/immo-back:${{ github.sha }}
+
+      # Le job d'ingestion partage l'image du serveur web, avec une commande
+      # différente. L'étape est ignorée tant que le job n'a pas été créé (voir
+      # PLAN_DEPLOIEMENT_AZURE.md) : le déploiement web ne doit pas échouer
+      # pour autant.
+      - name: Deploy ingestion job (if it exists)
+        run: |
+          if az containerapp job show --name caj-immo-ingest --resource-group rg-openhexa >/dev/null 2>&1; then
+            az containerapp job update \
+              --name caj-immo-ingest \
+              --resource-group rg-openhexa \
+              --image acropenhexa.azurecr.io/immo-back:${{ github.sha }}
+          else
+            echo "Job caj-immo-ingest absent : etape ignoree."
+          fi

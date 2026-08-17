@@ -21,6 +21,7 @@ URLs validées face aux exports réels (voir les docstrings de chaque module
 from __future__ import annotations
 
 from functools import lru_cache
+from typing import Literal
 
 from openhexa_core.config import ESSettings
 from pydantic_settings import SettingsConfigDict
@@ -28,6 +29,14 @@ from pydantic_settings import SettingsConfigDict
 
 class Settings(ESSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
+
+    # `in_process` : les boucles de polling tournent dans le serveur web, au
+    # risque de disputer CPU et mémoire au trafic HTTP (un OOM a déjà eu lieu à
+    # ce titre). `job` les désactive, l'ingestion étant alors assurée par
+    # `python -m app.jobs.ingest` sur un ordonnanceur séparé.
+    # Le défaut reste `in_process` : basculer sur `job` avant que
+    # l'ordonnanceur n'existe laisserait les données se périmer en silence.
+    ingestion_mode: Literal["in_process", "job"] = "in_process"
 
     dvf_year_start: int = 2021
     dvf_year_end: int = 2025
