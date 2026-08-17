@@ -21,6 +21,7 @@ from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dvf.ingestion import ingest_dvf_years
 from app.domain.dvf.zones import compute_zones, zones_are_computed
 from app.domain.sitage.ingestion import ingest_sitadel
+from app.http_cache import DataVersion, build_etag
 from app.indices import ensure_indices
 
 logger = structlog.get_logger(__name__)
@@ -73,8 +74,10 @@ async def _polling_loop(
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    global es_client
     settings = get_settings()
     client = await get_client(settings)
+    es_client = client
 
     await ensure_indices(client, settings)
 
@@ -92,6 +95,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     for task in polling_tasks:
         with contextlib.suppress(asyncio.CancelledError):
             await task
+    es_client = None
+    data_version.invalidate()
     await close_client()
     logger.info("immo_api_stopped")
 
@@ -169,30 +174,68 @@ app = FastAPI(title="OpenHexa Immo API", lifespan=lifespan)
 # refléter l'état réel de l'ingestion, jamais une réponse mise en cache.
 _NO_CACHE_PATHS = {"/api/v1/status"}
 
+# L'ETag dérive de la date du dernier calcul des zones, qui ne suit que les
+# ingestions DVF : l'appliquer aux routes DPE ou Sitadel servirait des 304 sur
+# des données qui, elles, auraient changé.
+_ETAG_PATH_PREFIX = "/api/v1/dvf/"
+
+data_version = DataVersion()
+
+# Client capturé au lifespan, et non obtenu par `get_client()` dans le
+# middleware : `get_client()` porte un retry exponentiel de 15 tentatives
+# (~100 s), pensé pour le démarrage face à un cluster encore froid. Sur le
+# chemin d'une requête HTTP, il ferait bloquer *chaque* requête pendant tout ce
+# budget dès qu'Elasticsearch devient injoignable. Ici, absence de client =
+# pas d'ETag, et la requête suit son cours.
+es_client: AsyncElasticsearch | None = None
+
+
+def _cache_control(settings: Settings) -> str:
+    return (
+        f"public, max-age={settings.http_cache_max_age_seconds}, "
+        f"stale-while-revalidate={settings.http_cache_stale_while_revalidate_seconds}"
+    )
+
 
 @app.middleware("http")
 async def add_cache_headers(
     request: Request, call_next: Callable[[Request], Awaitable[Response]]
 ) -> Response:
-    """Rend cachables les réponses de lecture, sauf `/status`.
+    """Pose les en-têtes de cache et répond 304 aux revalidations DVF inchangées.
 
     Sans en-tête explicite, ni le navigateur ni un éventuel CDN ne peuvent
-    réutiliser une réponse — alors que les données ne changent qu'au rythme du
-    polling d'ingestion. Ne s'applique qu'aux GET aboutis : une erreur ou une
-    réponse partielle ne doit pas être mémorisée.
+    réutiliser une réponse — alors que les données ne changent qu'au rythme de
+    l'ingestion. Les en-têtes ne s'appliquent qu'aux GET aboutis : une erreur ou
+    une réponse partielle ne doit pas être mémorisée.
     """
-    response = await call_next(request)
-    if request.method != "GET" or response.status_code != 200:
-        return response
+    if request.method != "GET":
+        return await call_next(request)
 
     if request.url.path in _NO_CACHE_PATHS:
-        response.headers["Cache-Control"] = "no-store"
-    else:
-        settings = get_settings()
-        response.headers["Cache-Control"] = (
-            f"public, max-age={settings.http_cache_max_age_seconds}, "
-            f"stale-while-revalidate={settings.http_cache_stale_while_revalidate_seconds}"
-        )
+        response = await call_next(request)
+        if response.status_code == 200:
+            response.headers["Cache-Control"] = "no-store"
+        return response
+
+    settings = get_settings()
+    etag: str | None = None
+    if request.url.path.startswith(_ETAG_PATH_PREFIX) and es_client is not None:
+        version = await data_version.get(es_client, f"{settings.es_index_prefix}-dvf-zones")
+        if version is not None:
+            etag = build_etag(version, request.url.path, request.url.query)
+            # 304 rendu avant `call_next` : c'est tout l'intérêt, la requête
+            # Elasticsearch n'est jamais exécutée.
+            if request.headers.get("if-none-match") == etag:
+                return Response(
+                    status_code=304,
+                    headers={"ETag": etag, "Cache-Control": _cache_control(settings)},
+                )
+
+    response = await call_next(request)
+    if response.status_code == 200:
+        response.headers["Cache-Control"] = _cache_control(settings)
+        if etag is not None:
+            response.headers["ETag"] = etag
     return response
 
 

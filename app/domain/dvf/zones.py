@@ -197,6 +197,27 @@ async def zones_are_computed(client: AsyncElasticsearch, zones_index: str) -> bo
     return int(response["count"]) > 0
 
 
+async def latest_calcule_le(client: AsyncElasticsearch, zones_index: str) -> str | None:
+    """Date du dernier calcul des zones, ou `None` si elles n'ont jamais été calculées.
+
+    Sert de **version des données DVF** : toutes les zones d'un même calcul
+    portent le même horodatage, et ce calcul suit chaque ingestion. Deux
+    réponses produites sous la même version sont donc identiques, ce qui est
+    exactement ce qu'un ETag doit garantir.
+    """
+    response = await client.search(
+        index=zones_index,
+        size=1,
+        source_includes=["calcule_le"],
+        sort=[{"calcule_le": "desc"}],
+    )
+    hits = response["hits"]["hits"]
+    if not hits:
+        return None
+    calcule_le = hits[0]["_source"].get("calcule_le")
+    return str(calcule_le) if calcule_le else None
+
+
 async def fetch_zones(
     client: AsyncElasticsearch, zones_index: str, niveau: str, code_parent: str | None = None
 ) -> list[dict[str, Any]]:
