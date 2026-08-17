@@ -9,8 +9,9 @@ from contextlib import asynccontextmanager
 
 import structlog
 from elasticsearch import AsyncElasticsearch
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from openhexa_core.elasticsearch.client import close_client, get_client
 from openhexa_core.elasticsearch.index import create_index, ensure_alias
 from openhexa_core.elasticsearch.search import count
@@ -137,6 +138,44 @@ def _start_polling_tasks(
 
 
 app = FastAPI(title="OpenHexa Immo API", lifespan=lifespan)
+
+# `/status` pilote le bandeau "synchronisation en cours" du frontend : il doit
+# refléter l'état réel de l'ingestion, jamais une réponse mise en cache.
+_NO_CACHE_PATHS = {"/api/v1/status"}
+
+
+@app.middleware("http")
+async def add_cache_headers(
+    request: Request, call_next: Callable[[Request], Awaitable[Response]]
+) -> Response:
+    """Rend cachables les réponses de lecture, sauf `/status`.
+
+    Sans en-tête explicite, ni le navigateur ni un éventuel CDN ne peuvent
+    réutiliser une réponse — alors que les données ne changent qu'au rythme du
+    polling d'ingestion. Ne s'applique qu'aux GET aboutis : une erreur ou une
+    réponse partielle ne doit pas être mémorisée.
+    """
+    response = await call_next(request)
+    if request.method != "GET" or response.status_code != 200:
+        return response
+
+    if request.url.path in _NO_CACHE_PATHS:
+        response.headers["Cache-Control"] = "no-store"
+    else:
+        settings = get_settings()
+        response.headers["Cache-Control"] = (
+            f"public, max-age={settings.http_cache_max_age_seconds}, "
+            f"stale-while-revalidate={settings.http_cache_stale_while_revalidate_seconds}"
+        )
+    return response
+
+
+# Les réponses de recherche sont du JSON très répétitif (mêmes clés sur chaque
+# hit, champs nuls) : la compression divise le transfert par un ordre de
+# grandeur pour un coût CPU négligeable. En dessous du seuil, elle coûterait
+# plus qu'elle ne rapporte.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
+
 # API publique en lecture seule (données ouvertes, pas de cookies/session) :
 # CORS permissif nécessaire puisque le frontend est servi sur une origine distincte.
 app.add_middleware(
