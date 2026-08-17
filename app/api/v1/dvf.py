@@ -7,6 +7,7 @@ from typing import Literal
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query
 from openhexa_core.elasticsearch.client import get_client
+from openhexa_core.pagination import decode_cursor
 
 from app.config import Settings, get_settings
 from app.domain.dvf.schemas import (
@@ -14,6 +15,8 @@ from app.domain.dvf.schemas import (
     DVFSearchParams,
     DVFSearchResponse,
     DVFTransaction,
+    ParcelleMutation,
+    ParcelleResponse,
     PrixCarteBucket,
     PrixCarteResponse,
 )
@@ -21,6 +24,7 @@ from app.domain.dvf.search import (
     CARTE_SOURCE_FIELDS,
     aggregate_prix_carte,
     get_dvf_by_mutation,
+    get_parcelle_mutations,
     search_dvf,
 )
 from app.domain.dvf.zones import fetch_zones
@@ -57,7 +61,9 @@ async def search(
         "complet",
         description="`carte` ne rapatrie que les champs nécessaires à l'affichage cartographique.",
     ),
-    search_after: list[str] | None = Query(None),
+    cursor: str | None = Query(
+        None, description="Curseur opaque de page suivante, renvoyé tel quel."
+    ),
     size: int = 20,
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
@@ -65,6 +71,7 @@ async def search(
     """Recherche des transactions DVF."""
     try:
         parsed_bbox = BBox.parse(bbox) if bbox else None
+        search_after = decode_cursor(cursor) if cursor else None
     except ValueError as error:
         raise HTTPException(400, str(error)) from error
 
@@ -98,7 +105,10 @@ async def search(
 
     items = [DVFTransaction.model_validate(hit["_source"]) for hit in page["hits"]]
     return DVFSearchResponse(
-        items=items, total=page["total"], next_search_after=page["next_search_after"]
+        items=items,
+        total=page["total"],
+        total_relation=page["total_relation"],
+        next_cursor=page["next_cursor"],
     )
 
 
@@ -142,6 +152,24 @@ async def prix_carte(
         niveau=niveau,
         buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets],
         calcule_le=next((bucket.get("calcule_le") for bucket in buckets), None),
+    )
+
+
+# Déclarée avant `/{id_mutation}` : FastAPI résout les routes dans l'ordre de
+# déclaration, et le paramètre attrape-tout capterait sinon `/parcelle/...`.
+@router.get("/parcelle/{id_parcelle}", response_model=ParcelleResponse)
+async def parcelle(
+    id_parcelle: str,
+    size: int = 50,
+    client: AsyncElasticsearch = Depends(_es_client),
+    settings: Settings = Depends(get_settings),
+) -> ParcelleResponse:
+    """Historique des ventes d'une parcelle, groupées par mutation."""
+    index = f"{settings.es_index_prefix}-dvf"
+    mutations = await get_parcelle_mutations(client, index, id_parcelle, size=size)
+    return ParcelleResponse(
+        id_parcelle=id_parcelle,
+        mutations=[ParcelleMutation.model_validate(mutation) for mutation in mutations],
     )
 
 

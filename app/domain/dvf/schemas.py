@@ -95,6 +95,19 @@ class DVFSearchResponse(BasePaginatedResponse[DVFTransaction]):
     pass
 
 
+class ParcelleMutation(BaseModel):
+    """Une mutation et l'ensemble des lots qu'elle porte sur une parcelle."""
+
+    id_mutation: str
+    date_mutation: str
+    lots: list[DVFTransaction]
+
+
+class ParcelleResponse(BaseModel):
+    id_parcelle: str
+    mutations: list[ParcelleMutation]
+
+
 class PrixCarteBucket(BaseModel):
     """Agrégat de prix médian au m² pour une zone (département, commune ou section)."""
 
