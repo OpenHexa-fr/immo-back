@@ -25,3 +25,22 @@ DVF_MAPPING: dict[str, Any] = {
         "etiquette_dpe": KEYWORD,
     }
 }
+
+# Agrégats de prix par zone, recalculés à l'issue de chaque ingestion DVF. La
+# choroplèthe de la carte n'a aucune raison de refaire à chaque affichage un
+# calcul dont le résultat ne change qu'entre deux ingestions.
+DVF_ZONES_MAPPING: dict[str, Any] = {
+    "properties": {
+        "niveau": KEYWORD,  # departement | commune | section
+        "code": KEYWORD,
+        # Département d'une commune, commune d'une section : c'est ce champ que
+        # filtre la carte pour ne charger que les zones du niveau parent visible.
+        "code_parent": KEYWORD,
+        "label": KEYWORD,
+        "prix_m2_median": FLOAT,
+        "prix_m2_p25": FLOAT,
+        "prix_m2_p75": FLOAT,
+        "nb_mutations": INTEGER,
+        "calcule_le": DATE,
+    }
+}

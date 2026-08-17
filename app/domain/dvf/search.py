@@ -48,7 +48,22 @@ def _build_dvf_query(params: DVFSearchParams) -> dict[str, Any]:
     if date_range:
         filters.append({"range": {"date_mutation": date_range}})
 
-    if params.lat is not None and params.lon is not None:
+    # Une emprise rectangulaire décrit exactement ce qu'affiche une carte : la
+    # requérir en `geo_distance` imposerait un cercle circonscrit au viewport,
+    # soit ~57 % de surface rapatriée hors écran. `geo_distance` reste le bon
+    # outil pour un rayon réellement circulaire ("autour de moi").
+    if params.bbox is not None:
+        filters.append(
+            {
+                "geo_bounding_box": {
+                    "location": {
+                        "top_left": {"lat": params.bbox.max_lat, "lon": params.bbox.min_lon},
+                        "bottom_right": {"lat": params.bbox.min_lat, "lon": params.bbox.max_lon},
+                    }
+                }
+            }
+        )
+    elif params.lat is not None and params.lon is not None:
         filters.append(
             {
                 "geo_distance": {
@@ -83,18 +98,39 @@ def _build_dvf_sort(params: DVFSearchParams) -> list[dict[str, Any]]:
     return [{"date_mutation": "desc"}, {"_seq_no": "asc"}]
 
 
+# Champs strictement nécessaires pour placer une vente sur la carte. Les quatre
+# premiers sont ceux qu'exploite le calque ventes ; `date_mutation` et `commune`
+# s'y ajoutent parce que `DVFTransaction` les exige à la validation.
+CARTE_SOURCE_FIELDS = [
+    "id_mutation",
+    "id_parcelle",
+    "location",
+    "valeur_fonciere",
+    "prix_m2",
+    "date_mutation",
+    "commune",
+]
+
+
 async def search_dvf(
     client: AsyncElasticsearch,
     index: str,
     params: DVFSearchParams,
     search_after: list[Any] | None = None,
     size: int = 20,
+    source: list[str] | None = None,
 ) -> dict[str, Any]:
     """Recherche des transactions DVF selon `params`, paginée par `search_after`."""
     query = _build_dvf_query(params)
     sort = _build_dvf_sort(params)
     return await paginate(
-        client, index=index, query=query, sort=sort, search_after=search_after, size=size
+        client,
+        index=index,
+        query=query,
+        sort=sort,
+        search_after=search_after,
+        size=size,
+        source=source,
     )
 
 

@@ -40,6 +40,14 @@ class Settings(ESSettings):
         "datafiles/8b35affb-55fc-4c1f-915b-7750f974446a/csv"
     )
 
+    # Durées de cache HTTP des réponses de lecture. Les données ne bougent
+    # qu'au rythme du polling ci-dessous (au mieux quotidien), donc servir une
+    # réponse d'il y a une heure est sans conséquence fonctionnelle ; le
+    # `stale-while-revalidate` évite en prime qu'un cold start (min-replicas 0)
+    # soit visible par l'utilisateur.
+    http_cache_max_age_seconds: int = 3600
+    http_cache_stale_while_revalidate_seconds: int = 86400
+
     # Sources volumineuses et peu volatiles (mises à jour mensuelles côté
     # producteurs) : polling nettement moins fréquent que les prix carburants.
     dvf_polling_interval_seconds: int = 7 * 24 * 3600

@@ -10,13 +10,20 @@ from openhexa_core.elasticsearch.client import get_client
 
 from app.config import Settings, get_settings
 from app.domain.dvf.schemas import (
+    BBox,
     DVFSearchParams,
     DVFSearchResponse,
     DVFTransaction,
     PrixCarteBucket,
     PrixCarteResponse,
 )
-from app.domain.dvf.search import aggregate_prix_carte, get_dvf_by_mutation, search_dvf
+from app.domain.dvf.search import (
+    CARTE_SOURCE_FIELDS,
+    aggregate_prix_carte,
+    get_dvf_by_mutation,
+    search_dvf,
+)
+from app.domain.dvf.zones import fetch_zones
 
 router = APIRouter(prefix="/dvf", tags=["dvf"])
 
@@ -41,13 +48,26 @@ async def search(
     lat: float | None = None,
     lon: float | None = None,
     radius_km: float = 10.0,
+    bbox: str | None = Query(
+        None,
+        description="Emprise `min_lon,min_lat,max_lon,max_lat` ; prime sur lat/lon+radius_km.",
+    ),
     tri: str | None = None,
+    champs: Literal["complet", "carte"] = Query(
+        "complet",
+        description="`carte` ne rapatrie que les champs nécessaires à l'affichage cartographique.",
+    ),
     search_after: list[str] | None = Query(None),
     size: int = 20,
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> DVFSearchResponse:
     """Recherche des transactions DVF."""
+    try:
+        parsed_bbox = BBox.parse(bbox) if bbox else None
+    except ValueError as error:
+        raise HTTPException(400, str(error)) from error
+
     params = DVFSearchParams(
         commune=commune,
         code_postal=code_postal,
@@ -63,10 +83,18 @@ async def search(
         lat=lat,
         lon=lon,
         radius_km=radius_km,
+        bbox=parsed_bbox,
         tri=tri,
     )
     index = f"{settings.es_index_prefix}-dvf"
-    page = await search_dvf(client, index, params, search_after=search_after, size=size)
+    page = await search_dvf(
+        client,
+        index,
+        params,
+        search_after=search_after,
+        size=size,
+        source=CARTE_SOURCE_FIELDS if champs == "carte" else None,
+    )
 
     items = [DVFTransaction.model_validate(hit["_source"]) for hit in page["hits"]]
     return DVFSearchResponse(
@@ -82,7 +110,12 @@ async def prix_carte(
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> PrixCarteResponse:
-    """Prix médian au m² agrégé par zone, pour la choroplèthe de la carte.
+    """Prix médian au m² par zone, pour la choroplèthe de la carte.
+
+    Servi depuis l'index de zones pré-agrégé, alimenté à l'issue de chaque
+    ingestion DVF. Tant que ce calcul n'a jamais tourné (premier déploiement,
+    index vide), on retombe sur l'agrégation à la volée : la carte reste
+    fonctionnelle, simplement plus lente.
 
     Chaque niveau de zoom doit être filtré par le niveau parent pour éviter
     d'agréger la France entière en une seule requête.
@@ -92,12 +125,23 @@ async def prix_carte(
     if niveau == "section" and not code_commune:
         raise HTTPException(400, "code_commune est requis pour niveau=section")
 
-    index = f"{settings.es_index_prefix}-dvf"
-    buckets = await aggregate_prix_carte(
-        client, index, niveau, code_departement=code_departement, code_commune=code_commune
+    code_parent = code_departement if niveau == "commune" else code_commune
+    buckets = await fetch_zones(
+        client, f"{settings.es_index_prefix}-dvf-zones", niveau, code_parent=code_parent
     )
+    if not buckets:
+        buckets = await aggregate_prix_carte(
+            client,
+            f"{settings.es_index_prefix}-dvf",
+            niveau,
+            code_departement=code_departement,
+            code_commune=code_commune,
+        )
+
     return PrixCarteResponse(
-        niveau=niveau, buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets]
+        niveau=niveau,
+        buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets],
+        calcule_le=next((bucket.get("calcule_le") for bucket in buckets), None),
     )
 
 

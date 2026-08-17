@@ -3,12 +3,50 @@
 from __future__ import annotations
 
 from openhexa_core.models import BaseDocument, BasePaginatedResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 
 class GeoPoint(BaseModel):
     lat: float
     lon: float
+
+
+class BBox(BaseModel):
+    """Emprise rectangulaire, dans l'ordre GeoJSON (`min_lon, min_lat, max_lon, max_lat`).
+
+    C'est l'ordre rendu par `map.getBounds().toArray()` côté MapLibre, donc
+    celui attendu du frontend sans réarrangement.
+    """
+
+    min_lon: float
+    min_lat: float
+    max_lon: float
+    max_lat: float
+
+    @model_validator(mode="after")
+    def _check_bounds(self) -> BBox:
+        if not (-180 <= self.min_lon <= 180 and -180 <= self.max_lon <= 180):
+            raise ValueError("longitude hors de [-180, 180]")
+        if not (-90 <= self.min_lat <= 90 and -90 <= self.max_lat <= 90):
+            raise ValueError("latitude hors de [-90, 90]")
+        if self.min_lat > self.max_lat:
+            raise ValueError("min_lat doit être inférieure à max_lat")
+        # `min_lon > max_lon` est volontairement toléré : c'est le cas légitime
+        # d'une emprise qui franchit l'antiméridien, qu'Elasticsearch sait
+        # interpréter tel quel.
+        return self
+
+    @classmethod
+    def parse(cls, raw: str) -> BBox:
+        """Parse la forme `min_lon,min_lat,max_lon,max_lat` reçue en query param."""
+        parts = raw.split(",")
+        if len(parts) != 4:
+            raise ValueError("bbox attend 4 valeurs : min_lon,min_lat,max_lon,max_lat")
+        try:
+            min_lon, min_lat, max_lon, max_lat = (float(part) for part in parts)
+        except ValueError as error:
+            raise ValueError("bbox attend 4 nombres décimaux") from error
+        return cls(min_lon=min_lon, min_lat=min_lat, max_lon=max_lon, max_lat=max_lat)
 
 
 class DVFTransaction(BaseDocument):
@@ -46,6 +84,10 @@ class DVFSearchParams(BaseModel):
     lat: float | None = None
     lon: float | None = None
     radius_km: float = 10.0
+    # Une emprise rectangulaire prime sur le couple `lat`/`lon` + `radius_km`
+    # pour restreindre les résultats : `lat`/`lon` restent alors utilisables
+    # pour trier par distance. Voir `_build_dvf_query`.
+    bbox: BBox | None = None
     tri: str | None = None
 
 
@@ -59,9 +101,16 @@ class PrixCarteBucket(BaseModel):
     code: str
     label: str
     prix_m2_median: float
+    # Absents de l'agrégation à la volée servant de repli, présents dès que les
+    # zones sont pré-agrégées.
+    prix_m2_p25: float | None = None
+    prix_m2_p75: float | None = None
     nb_mutations: int
 
 
 class PrixCarteResponse(BaseModel):
     niveau: str
     buckets: list[PrixCarteBucket]
+    # Date du dernier calcul des zones — `None` quand la réponse vient du repli
+    # à la volée. Destiné à servir de version de données (ETag, invalidation).
+    calcule_le: str | None = None

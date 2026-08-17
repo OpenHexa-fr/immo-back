@@ -4,15 +4,19 @@ from __future__ import annotations
 
 from unittest.mock import AsyncMock, patch
 
+import pytest
+
 from app.domain.dvf.ingestion import (
     _compute_adresse,
     _row_to_document,
     ingest_dvf_years,
     parse_dvf_csv,
 )
-from app.domain.dvf.schemas import DVFSearchParams
+from app.domain.dvf.schemas import BBox, DVFSearchParams, DVFTransaction
 from app.domain.dvf.search import (
+    CARTE_SOURCE_FIELDS,
     _build_dvf_query,
+    _build_dvf_sort,
     _build_prix_carte_query,
     aggregate_prix_carte,
     get_dvf_by_mutation,
@@ -281,6 +285,96 @@ def test_build_dvf_query_filters_by_date_mutation_range() -> None:
     assert {"range": {"date_mutation": {"gte": "2020-01-01", "lte": "2020-12-31"}}} in query[
         "bool"
     ]["filter"]
+
+
+def test_build_dvf_query_uses_geo_bounding_box_for_bbox() -> None:
+    params = DVFSearchParams(bbox=BBox(min_lon=3.0, min_lat=50.7, max_lon=3.2, max_lat=50.8))
+
+    query = _build_dvf_query(params)
+
+    assert {
+        "geo_bounding_box": {
+            "location": {
+                "top_left": {"lat": 50.8, "lon": 3.0},
+                "bottom_right": {"lat": 50.7, "lon": 3.2},
+            }
+        }
+    } in query["bool"]["filter"]
+
+
+def test_build_dvf_query_prefers_bbox_over_radius_but_keeps_center_for_sorting() -> None:
+    params = DVFSearchParams(
+        lat=50.75,
+        lon=3.1,
+        radius_km=5,
+        bbox=BBox(min_lon=3.0, min_lat=50.7, max_lon=3.2, max_lat=50.8),
+        tri="distance",
+    )
+
+    query = _build_dvf_query(params)
+
+    assert not any("geo_distance" in clause for clause in query["bool"]["filter"])
+    assert _build_dvf_sort(params)[0]["_geo_distance"]["location"] == {"lat": 50.75, "lon": 3.1}
+
+
+def test_build_dvf_query_keeps_geo_distance_without_bbox() -> None:
+    params = DVFSearchParams(lat=50.75, lon=3.1, radius_km=5)
+
+    query = _build_dvf_query(params)
+
+    assert {
+        "geo_distance": {"distance": "5.0km", "location": {"lat": 50.75, "lon": 3.1}}
+    } in query["bool"]["filter"]
+
+
+def test_bbox_parses_geojson_order() -> None:
+    bbox = BBox.parse("3.0,50.7,3.2,50.8")
+
+    assert (bbox.min_lon, bbox.min_lat, bbox.max_lon, bbox.max_lat) == (3.0, 50.7, 3.2, 50.8)
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "3.0,50.7,3.2",  # trop peu de valeurs
+        "3.0,50.7,3.2,50.8,1",  # trop de valeurs
+        "3.0,50.7,3.2,nord",  # non numérique
+        "3.0,50.8,3.2,50.7",  # min_lat au-dessus de max_lat
+        "3.0,-91,3.2,50.8",  # latitude hors bornes
+    ],
+)
+def test_bbox_rejects_malformed_input(raw: str) -> None:
+    with pytest.raises(ValueError):
+        BBox.parse(raw)
+
+
+def test_bbox_accepts_antimeridian_crossing() -> None:
+    """Une emprise qui franchit l'antiméridien a `min_lon > max_lon` — ES le gère."""
+    bbox = BBox.parse("179.5,-16.0,-179.5,-15.0")
+
+    assert bbox.min_lon > bbox.max_lon
+
+
+async def test_search_dvf_forwards_source_filtering() -> None:
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": [], "total": {"value": 0}}}
+
+    await search_dvf(client, "openhexa-dvf", DVFSearchParams(), source=CARTE_SOURCE_FIELDS)
+
+    assert client.search.call_args.kwargs["source"] == CARTE_SOURCE_FIELDS
+
+
+def test_carte_source_fields_cover_required_transaction_fields() -> None:
+    """`champs=carte` doit rapatrier de quoi valider un `DVFTransaction`.
+
+    Sinon la réponse casserait à la validation Pydantic au lieu de simplement
+    être plus légère.
+    """
+    required = {
+        name for name, field in DVFTransaction.model_fields.items() if field.is_required()
+    }
+
+    assert required <= set(CARTE_SOURCE_FIELDS)
 
 
 async def test_search_dvf_calls_paginate_with_built_query() -> None:
