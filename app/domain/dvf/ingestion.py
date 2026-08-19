@@ -59,6 +59,9 @@ _DVF_COLUMNS = [
     "adresse_numero",
     "adresse_suffixe",
     "adresse_nom_voie",
+    # Code FANTOIR de la voie : deuxième segment de l'identifiant BAN, donc
+    # indispensable au rapprochement avec les DPE (cf. `_compute_identifiant_ban`).
+    "adresse_code_voie",
     "lot1_numero",
     "longitude",
     "latitude",
@@ -113,6 +116,11 @@ def parse_dvf_csv(raw_csv: bytes) -> pl.DataFrame:
             "code_postal": pl.Utf8,
             "code_departement": pl.Utf8,
             "code_commune": pl.Utf8,
+            # Les codes FANTOIR sont alphanumériques ("B078") mais certains sont
+            # purement numériques ("0550") : sans forçage, polars infère un
+            # entier sur les fichiers où seule la seconde forme apparaît, et le
+            # zéro initial saute.
+            "adresse_code_voie": pl.Utf8,
         },
         infer_schema_length=10_000,
         ignore_errors=True,
@@ -157,6 +165,46 @@ def _compute_adresse(row: dict[str, Any]) -> str | None:
     return f"{prefix}{nom_voie}"
 
 
+# Correspondance des suffixes d'adresse DVF vers leur forme dans l'identifiant
+# BAN. DVF code le suffixe sur une lettre, la BAN l'écrit en toutes lettres pour
+# les rangs ("bis", "ter") mais garde la lettre pour les indices de bâtiment. La
+# lettre seule étant ambiguë, on ne traduit que les rangs usuels et on renonce
+# au rapprochement pour le reste — un faux positif serait pire qu'une absence.
+_SUFFIXES_BAN = {"B": "bis", "T": "ter", "Q": "quater"}
+
+
+def _compute_identifiant_ban(row: dict[str, Any]) -> str | None:
+    """Reconstruit l'identifiant BAN `{code_insee}_{code_voie}_{numero}`.
+
+    C'est la clé de jointure avec les diagnostics DPE, que l'ADEME publie déjà
+    sous cette forme. La reconstruire ici évite d'appeler le service de
+    géocodage de la BAN sur des millions de mutations.
+
+    Renvoie `None` dès qu'un segment manque — typiquement les ventes de terrains
+    nus, dépourvues de numéro de voie, et qui n'ont de toute façon aucun DPE.
+    """
+    code_commune = row.get("code_commune")
+    code_voie = row.get("adresse_code_voie")
+    numero = row.get("adresse_numero")
+    if not code_commune or not code_voie or numero is None:
+        return None
+
+    try:
+        numero_formate = f"{int(float(numero)):05d}"
+    except (TypeError, ValueError):
+        return None
+
+    identifiant = f"{code_commune}_{code_voie}_{numero_formate}"
+
+    suffixe = (row.get("adresse_suffixe") or "").strip().upper()
+    if suffixe:
+        rang = _SUFFIXES_BAN.get(suffixe)
+        if rang is None:
+            return None
+        identifiant = f"{identifiant}_{rang}"
+    return identifiant
+
+
 def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
     location = None
     if row.get("latitude") is not None and row.get("longitude") is not None:
@@ -188,6 +236,7 @@ def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
         "code_section": code_section,
         "id_parcelle": id_parcelle,
         "adresse": _compute_adresse(row),
+        "identifiant_ban": _compute_identifiant_ban(row),
         "prix_m2": _compute_prix_m2(
             row["valeur_fonciere"], row.get("surface_reelle_bati"), row.get("surface_terrain")
         ),
