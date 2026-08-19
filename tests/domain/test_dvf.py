@@ -144,7 +144,8 @@ _RAW_CSV_HEADER = (
     b"id_mutation,numero_disposition,id_parcelle,code_type_local,date_mutation,"
     b"valeur_fonciere,surface_reelle_bati,surface_terrain,nombre_pieces_principales,"
     b"type_local,nom_commune,code_postal,code_departement,code_commune,"
-    b"adresse_numero,adresse_suffixe,adresse_nom_voie,lot1_numero,longitude,latitude"
+    b"adresse_numero,adresse_suffixe,adresse_nom_voie,lot1_numero,longitude,latitude,"
+    b"adresse_code_voie"
 )
 
 
@@ -153,7 +154,7 @@ def test_parse_dvf_csv_keeps_only_known_columns() -> None:
         _RAW_CSV_HEADER
         + b",extra_column\n"
         + b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,,3,Appartement,Marseille,"
-        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29,ignored\n"
+        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29,ignored,0550\n"
     )
 
     dataframe = parse_dvf_csv(raw_csv)
@@ -171,7 +172,7 @@ def test_parse_dvf_csv_keeps_code_postal_as_string() -> None:
         _RAW_CSV_HEADER
         + b"\n"
         + b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,,3,Appartement,Bourg,"
-        b"01000,01,01053,28,,RUE DE LA POTERNE,001,5.37,43.29\n"
+        b"01000,01,01053,28,,RUE DE LA POTERNE,001,5.37,43.29,B078\n"
     )
 
     dataframe = parse_dvf_csv(raw_csv)
@@ -191,7 +192,7 @@ def test_parse_dvf_csv_decompresses_gzip_input() -> None:
     raw_csv = (
         _RAW_CSV_HEADER + b"\n"
         b"2024-1,000001,010760000B0514,1,2024-01-15,250000.0,80,,3,Appartement,Marseille,"
-        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29\n"
+        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29,0550\n"
     )
 
     dataframe = parse_dvf_csv(gzip.compress(raw_csv))
@@ -204,9 +205,9 @@ def test_parse_dvf_csv_drops_rows_with_missing_valeur_fonciere() -> None:
         _RAW_CSV_HEADER
         + b"\n"
         + b"2024-1,000001,010760000B0514,1,2024-01-15,,80,,3,Appartement,Marseille,"
-        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29\n"
+        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29,0550\n"
         b"2024-2,000001,010760000B0515,1,2024-01-15,250000.0,80,,3,Appartement,Marseille,"
-        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29\n"
+        b"13001,13,13055,28,,RUE DE LA POTERNE,001,5.37,43.29,0550\n"
     )
 
     dataframe = parse_dvf_csv(raw_csv)
@@ -217,7 +218,7 @@ def test_parse_dvf_csv_drops_rows_with_missing_valeur_fonciere() -> None:
 
 def test_parse_dvf_csv_disambiguates_identical_rows_via_occurrence_index() -> None:
     row = (
-        b"2025-1,1,33193000AD0001,1,2025-01-07,243596.0,,,,,Bordeaux,33000,33,33063,,,,,-0.567,44.84\n"
+        b"2025-1,1,33193000AD0001,1,2025-01-07,243596.0,,,,,Bordeaux,33000,33,33063,,,,,-0.567,44.84,0550\n"
     )
     raw_csv = _RAW_CSV_HEADER + b"\n" + row * 3
 

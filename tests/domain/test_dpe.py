@@ -2,14 +2,22 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from collections.abc import AsyncIterator
+from datetime import date
+from typing import Any
+from unittest.mock import AsyncMock, patch
 
 import httpx
 import pytest
 
-from app.domain.dpe.ingestion import _row_to_document, fetch_dpe_pages
+from app.domain.dpe.ingestion import _row_to_document, fetch_dpe_pages, ingest_dpe
 from app.domain.dpe.schemas import DPESearchParams
 from app.domain.dpe.search import _build_dpe_query, search_dpe
+
+
+async def _pages(pages: list[list[dict[str, Any]]]) -> AsyncIterator[list[dict[str, Any]]]:
+    for page in pages:
+        yield page
 
 
 def test_row_to_document_builds_deterministic_id() -> None:
@@ -113,3 +121,70 @@ async def test_fetch_dpe_pages_follows_cursor_beyond_first_page(
 
     assert len(pages) == 2
     assert requested_urls[1] == "https://example.test/dataset/lines?after=cursor1"
+
+
+async def test_ingestion_incrementale_repart_de_la_derniere_reception() -> None:
+    """Le dataset dépasse 15 M de lignes : le remoissonner en entier chaque semaine
+    dépassait le budget du job planifié."""
+    client = AsyncMock()
+    client.search.return_value = {
+        "hits": {"hits": [{"_source": {"date_reception": "2026-08-10"}}]}
+    }
+
+    with patch("app.domain.dpe.ingestion.fetch_dpe_pages") as fetch:
+        fetch.return_value = _pages([])
+        await ingest_dpe(client, "openhexa-dpe", "https://exemple.test/dataset")
+
+    # Marge de recouvrement de 7 jours : une ligne peut apparaître après coup
+    # avec une date de réception antérieure.
+    assert fetch.call_args.kwargs["depuis"] == date(2026, 8, 3)
+
+
+async def test_ingestion_complete_quand_l_index_est_vide() -> None:
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+
+    with patch("app.domain.dpe.ingestion.fetch_dpe_pages") as fetch:
+        fetch.return_value = _pages([])
+        await ingest_dpe(client, "openhexa-dpe", "https://exemple.test/dataset")
+
+    assert fetch.call_args.kwargs["depuis"] is None
+
+
+async def test_option_complet_ignore_le_point_de_reprise() -> None:
+    """Nécessaire après un élargissement des champs : les documents déjà
+    indexés ne sont jamais rétro-complétés."""
+    client = AsyncMock()
+    client.search.return_value = {
+        "hits": {"hits": [{"_source": {"date_reception": "2026-08-10"}}]}
+    }
+
+    with patch("app.domain.dpe.ingestion.fetch_dpe_pages") as fetch:
+        fetch.return_value = _pages([])
+        await ingest_dpe(client, "openhexa-dpe", "https://exemple.test/dataset", complet=True)
+
+    assert fetch.call_args.kwargs["depuis"] is None
+
+
+def test_row_to_document_extrait_la_cle_ban_et_la_position() -> None:
+    document = _row_to_document(
+        {
+            "numero_dpe": "2226E0123456X",
+            "identifiant_ban": "11069_0550_00025",
+            "adresse_ban": "25 Rue de Belfort 11000 Carcassonne",
+            "score_ban": 0.66,
+            "type_batiment": "immeuble",
+            "date_reception_dpe": "2026-01-07",
+            "_geopoint": "43.21658904532532,2.359097060835481",
+        }
+    )
+
+    assert document["identifiant_ban"] == "11069_0550_00025"
+    assert document["date_reception"] == "2026-01-07"
+    assert document["location"] == {"lat": 43.21658904532532, "lon": 2.359097060835481}
+
+
+def test_row_to_document_tolere_un_geopoint_absent_ou_malforme() -> None:
+    """35 % des lignes ne sont pas géocodées par l'ADEME."""
+    assert _row_to_document({"numero_dpe": "X"})["location"] is None
+    assert _row_to_document({"numero_dpe": "X", "_geopoint": "n/a"})["location"] is None

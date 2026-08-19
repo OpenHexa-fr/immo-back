@@ -20,6 +20,8 @@ DVF_MAPPING: dict[str, Any] = {
         "code_section": KEYWORD,
         "id_parcelle": KEYWORD,
         "adresse": TEXT,
+        # Clé de rapprochement avec les DPE (cf. dvf/ingestion.py).
+        "identifiant_ban": KEYWORD,
         "prix_m2": FLOAT,
         "location": GEO_POINT,
         "etiquette_dpe": KEYWORD,

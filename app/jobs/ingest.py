@@ -27,13 +27,16 @@ from openhexa_core.elasticsearch.client import close_client, get_client
 from app.config import Settings, get_settings
 from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dvf.ingestion import ingest_dvf_years
+from app.domain.dvf.jointure import joindre_dpe
 from app.domain.dvf.zones import compute_zones
 from app.domain.sitage.ingestion import ingest_sitadel
 from app.indices import alias_for, ensure_indices
 
 logger = structlog.get_logger(__name__)
 
-SOURCES = ("dvf", "dpe", "sitadel", "zones")
+# L'ordre vaut pour `--source all` : `jointure` a besoin de DVF et DPE
+# fraîchement ingérés, `zones` dérive de DVF.
+SOURCES = ("dvf", "dpe", "sitadel", "jointure", "zones")
 
 
 async def _run_source(
@@ -45,6 +48,14 @@ async def _run_source(
         )
     if source == "dpe":
         return await ingest_dpe(client, alias_for(settings, "dpe"), settings.dpe_data_url)
+    if source == "dpe-complet":
+        return await ingest_dpe(
+            client, alias_for(settings, "dpe"), settings.dpe_data_url, complet=True
+        )
+    if source == "jointure":
+        return await joindre_dpe(
+            client, alias_for(settings, "dvf"), alias_for(settings, "dpe")
+        )
     if source == "sitadel":
         return await ingest_sitadel(
             client, alias_for(settings, "sitage"), settings.sitadel_data_url
@@ -94,10 +105,12 @@ def _parse_args(argv: list[str] | None = None) -> list[str]:
     parser.add_argument(
         "--source",
         action="append",
-        choices=[*SOURCES, "all"],
+        choices=[*SOURCES, "dpe-complet", "all"],
         required=True,
         help="Source à ingérer ; répétable. `all` équivaut à toutes les sources, "
-        "`dvf` avant `zones` puisque celles-ci en dérivent.",
+        "dans un ordre qui respecte leurs dépendances. `dpe-complet` force une "
+        "moisson intégrale du dataset ADEME, là où `dpe` ne reprend que les "
+        "diagnostics reçus depuis la dernière ingestion.",
     )
     args = parser.parse_args(argv)
     sources: list[str] = args.source
