@@ -66,6 +66,45 @@ NIVEAUX_SERIE = ("departement", "commune")
 _PRIX_M2_MIN = 10
 _PRIX_M2_MAX = 50_000
 
+# Bâti et terrain nu sont deux marchés sans rapport : au m², un appartement et
+# un champ ne se comparent pas, et les agréger produisait une médiane hybride
+# ininterprétable. Le critère reproduit exactement celui de `_compute_prix_m2`
+# (ingestion.py) : le prix au m² se base sur la surface bâtie dès qu'elle est
+# non nulle, sinon sur celle du terrain. Toute évolution de cette règle doit
+# être répercutée ici.
+_FILTRE_BATI: dict[str, Any] = {"range": {"surface_reelle_bati": {"gt": 0}}}
+
+CATEGORIES = ("bati", "terrain")
+
+
+def _aggs_prix_par_categorie() -> dict[str, Any]:
+    """Percentiles du prix au m², calculés séparément pour le bâti et le terrain."""
+    percentiles = {"percentiles": {"field": "prix_m2", "percents": [25, 50, 75]}}
+    return {
+        "bati": {"filter": _FILTRE_BATI, "aggs": {"prix": percentiles}},
+        "terrain": {
+            "filter": {"bool": {"must_not": [_FILTRE_BATI]}},
+            "aggs": {"prix": percentiles},
+        },
+    }
+
+
+def _prix_par_categorie(bucket: dict[str, Any]) -> dict[str, Any]:
+    """Extrait les agrégats d'un bucket, aplatis en champs suffixés par catégorie."""
+    champs: dict[str, Any] = {}
+    for categorie in CATEGORIES:
+        sous_bucket = bucket[categorie]
+        valeurs = sous_bucket["prix"]["values"]
+        champs[f"prix_m2_median_{categorie}"] = _arrondi(valeurs["50.0"])
+        champs[f"prix_m2_p25_{categorie}"] = _arrondi(valeurs["25.0"])
+        champs[f"prix_m2_p75_{categorie}"] = _arrondi(valeurs["75.0"])
+        champs[f"nb_mutations_{categorie}"] = sous_bucket["doc_count"]
+    return champs
+
+
+def _arrondi(valeur: float | None) -> float | None:
+    return round(valeur, 2) if valeur is not None else None
+
 
 def _zones_query() -> dict[str, Any]:
     """Mutations dont le prix au m² est calculable *et* plausible."""
@@ -129,18 +168,17 @@ async def _iter_zone_documents(
         sources.append({"parent": {"terms": {"field": parent_field}}})
     sources.append({"code": {"terms": {"field": code_field}}})
 
-    aggs: dict[str, Any] = {
-        "prix": {"percentiles": {"field": "prix_m2", "percents": [25, 50, 75]}}
-    }
+    aggs = _aggs_prix_par_categorie()
     if label_field is not None:
         # Le nom de la commune n'existe pas comme clé d'agrégation (seul son code
         # INSEE en est une) : on le lit sur un document du bucket.
         aggs["label"] = {"top_hits": {"size": 1, "_source": [label_field]}}
 
     async for bucket in _iter_composite_buckets(client, dvf_index, sources, aggs):
-        values = bucket["prix"]["values"]
-        median = values["50.0"]
-        if median is None:
+        prix = _prix_par_categorie(bucket)
+        # Une zone sans médiane dans aucune des deux catégories n'a rien à
+        # colorer, quel que soit le mode d'affichage choisi.
+        if all(prix[f"prix_m2_median_{categorie}"] is None for categorie in CATEGORIES):
             continue
 
         code = bucket["key"]["code"]
@@ -157,11 +195,9 @@ async def _iter_zone_documents(
             "code": code,
             "code_parent": bucket["key"].get("parent"),
             "label": label,
-            "prix_m2_median": round(median, 2),
-            "prix_m2_p25": round(values["25.0"], 2) if values["25.0"] is not None else None,
-            "prix_m2_p75": round(values["75.0"], 2) if values["75.0"] is not None else None,
             "nb_mutations": bucket["doc_count"],
             "calcule_le": calcule_le,
+            **prix,
         }
 
 
@@ -197,16 +233,13 @@ async def _iter_serie_documents(
         }
     )
 
-    aggs: dict[str, Any] = {
-        "prix": {"percentiles": {"field": "prix_m2", "percents": [25, 50, 75]}}
-    }
+    aggs = _aggs_prix_par_categorie()
     if label_field is not None:
         aggs["label"] = {"top_hits": {"size": 1, "_source": [label_field]}}
 
     async for bucket in _iter_composite_buckets(client, dvf_index, sources, aggs):
-        values = bucket["prix"]["values"]
-        median = values["50.0"]
-        if median is None:
+        prix = _prix_par_categorie(bucket)
+        if all(prix[f"prix_m2_median_{categorie}"] is None for categorie in CATEGORIES):
             continue
 
         code = bucket["key"]["code"]
@@ -224,11 +257,9 @@ async def _iter_serie_documents(
             "annee": annee,
             "code_parent": bucket["key"].get("parent"),
             "label": label,
-            "prix_m2_median": round(median, 2),
-            "prix_m2_p25": round(values["25.0"], 2) if values["25.0"] is not None else None,
-            "prix_m2_p75": round(values["75.0"], 2) if values["75.0"] is not None else None,
             "nb_mutations": bucket["doc_count"],
             "calcule_le": calcule_le,
+            **prix,
         }
 
 

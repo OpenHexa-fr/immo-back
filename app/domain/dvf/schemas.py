@@ -136,6 +136,7 @@ class PrixSeriePoint(BaseModel):
 
 class PrixSerieResponse(BaseModel):
     niveau: str
+    categorie: str | None = None
     code: str
     label: str | None = None
     points: list[PrixSeriePoint]
@@ -147,6 +148,7 @@ class ZoneResponse(BaseModel):
     """Agrégat global d'une zone, pour situer une vente dans son marché local."""
 
     niveau: str
+    categorie: str | None = None
     code: str
     label: str
     prix_m2_median: float
@@ -157,6 +159,9 @@ class ZoneResponse(BaseModel):
 
 class PrixCarteResponse(BaseModel):
     niveau: str
+    # Marché agrégé : `bati` ou `terrain`. Absent du repli à la volée, qui ne
+    # les distingue pas.
+    categorie: str | None = None
     buckets: list[PrixCarteBucket]
     # Date du dernier calcul des zones — `None` quand la réponse vient du repli
     # à la volée. Destiné à servir de version de données (ETag, invalidation).
