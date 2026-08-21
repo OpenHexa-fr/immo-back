@@ -64,6 +64,11 @@ class DVFTransaction(BaseDocument):
     code_section: str | None = None
     id_parcelle: str | None = None
     adresse: str | None = None
+    # Identifiant d'adresse BAN, clé du rapprochement avec les DPE. Exposé pour
+    # que la couverture de la jointure soit vérifiable de l'extérieur, sans
+    # accès direct à Elasticsearch. `None` sur les ventes sans numéro de voie —
+    # essentiellement des terrains nus.
+    identifiant_ban: str | None = None
     prix_m2: float | None = None
     location: GeoPoint | None = None
     etiquette_dpe: str | None = None
