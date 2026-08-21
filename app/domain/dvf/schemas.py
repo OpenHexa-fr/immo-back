@@ -83,6 +83,14 @@ class DVFSearchParams(BaseModel):
     valeur_fonciere_max: float | None = None
     surface_min: int | None = None
     surface_max: int | None = None
+    # Champs déjà indexés mais qui n'étaient pas filtrables : la donnée était là,
+    # simplement pas exposée.
+    surface_terrain_min: int | None = None
+    surface_terrain_max: int | None = None
+    pieces_min: int | None = None
+    pieces_max: int | None = None
+    prix_m2_min: float | None = None
+    prix_m2_max: float | None = None
     etiquette_dpe: list[str] | None = None
     date_mutation_min: str | None = None
     date_mutation_max: str | None = None

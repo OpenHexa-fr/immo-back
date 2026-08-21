@@ -505,3 +505,35 @@ async def test_get_dvf_by_mutation_filters_on_term_query() -> None:
     client.search.assert_called_once_with(
         index="openhexa-dvf", query={"term": {"id_mutation": "2024-1"}}, size=50
     )
+
+
+def test_filtre_par_nombre_de_pieces() -> None:
+    """Champ indexé de longue date mais qui n'était pas filtrable."""
+    query = _build_dvf_query(DVFSearchParams(pieces_min=3, pieces_max=5))
+
+    assert {"range": {"nombre_pieces_principales": {"gte": 3, "lte": 5}}} in query["bool"]["filter"]
+
+
+def test_filtre_par_prix_au_m2() -> None:
+    query = _build_dvf_query(DVFSearchParams(prix_m2_max=3000))
+
+    assert {"range": {"prix_m2": {"lte": 3000}}} in query["bool"]["filter"]
+
+
+def test_filtre_par_surface_de_terrain() -> None:
+    query = _build_dvf_query(DVFSearchParams(surface_terrain_min=500))
+
+    assert {"range": {"surface_terrain": {"gte": 500}}} in query["bool"]["filter"]
+
+
+def test_une_borne_seule_suffit() -> None:
+    query = _build_dvf_query(DVFSearchParams(pieces_min=4))
+
+    assert {"range": {"nombre_pieces_principales": {"gte": 4}}} in query["bool"]["filter"]
+
+
+def test_aucun_intervalle_sans_borne() -> None:
+    """Un filtre non renseigné ne doit pas produire de clause vide."""
+    query = _build_dvf_query(DVFSearchParams())
+
+    assert not any("range" in clause for clause in query["bool"]["filter"])
