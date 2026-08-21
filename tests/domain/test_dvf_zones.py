@@ -34,7 +34,11 @@ def _bucket(
     bucket: dict[str, Any] = {
         "key": {"code": code},
         "doc_count": doc_count,
-        "prix": {"values": {"25.0": 1500.0, "50.0": median, "75.0": 2500.0}},
+        "bati": {
+            "doc_count": doc_count,
+            "prix": {"values": {"25.0": 1500.0, "50.0": median, "75.0": 2500.0}},
+        },
+        "terrain": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
     }
     if parent is not None:
         bucket["key"]["parent"] = parent
@@ -73,11 +77,16 @@ async def test_compute_zones_builds_documents_with_deterministic_ids() -> None:
             "code": "59",
             "code_parent": None,
             "label": "59",
-            "prix_m2_median": 2000.0,
-            "prix_m2_p25": 1500.0,
-            "prix_m2_p75": 2500.0,
             "nb_mutations": 42,
             "calcule_le": documents[0]["calcule_le"],
+            "prix_m2_median_bati": 2000.0,
+            "prix_m2_p25_bati": 1500.0,
+            "prix_m2_p75_bati": 2500.0,
+            "nb_mutations_bati": 42,
+            "prix_m2_median_terrain": None,
+            "prix_m2_p25_terrain": None,
+            "prix_m2_p75_terrain": None,
+            "nb_mutations_terrain": 0,
         }
     ]
 
@@ -212,7 +221,11 @@ def _serie_bucket(
     bucket: dict[str, Any] = {
         "key": {"code": code, "annee": annee},
         "doc_count": 120,
-        "prix": {"values": {"25.0": 1000.0, "50.0": median, "75.0": 3000.0}},
+        "bati": {
+            "doc_count": 120,
+            "prix": {"values": {"25.0": 1000.0, "50.0": median, "75.0": 3000.0}},
+        },
+        "terrain": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
     }
     if parent is not None:
         bucket["key"]["parent"] = parent
@@ -234,7 +247,7 @@ async def test_compute_zones_produit_une_serie_annuelle() -> None:
         await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
 
     documents = bulk.call_args_list[-1].args[2]
-    assert [(d["annee"], d["prix_m2_median"]) for d in documents] == [
+    assert [(d["annee"], d["prix_m2_median_bati"]) for d in documents] == [
         (2021, 1800.0),
         (2022, 1950.0),
     ]
@@ -291,3 +304,34 @@ async def test_fetch_zone_retourne_none_si_inconnue() -> None:
     client.search.return_value = {"hits": {"hits": []}}
 
     assert await fetch_zone(client, "openhexa-dvf-zones", "commune", "00000") is None
+
+
+async def test_bati_et_terrain_sont_agreges_separement() -> None:
+    """Au m², un appartement et un champ ne se comparent pas."""
+    client = AsyncMock()
+    client.search.side_effect = _sequence_recherches()
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(0, 0))):
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    aggs = client.search.call_args_list[0].kwargs["aggs"]["zones"]["aggs"]
+    assert aggs["bati"]["filter"] == {"range": {"surface_reelle_bati": {"gt": 0}}}
+    assert aggs["terrain"]["filter"] == {
+        "bool": {"must_not": [{"range": {"surface_reelle_bati": {"gt": 0}}}]}
+    }
+
+
+async def test_zone_sans_aucune_mediane_est_ignoree() -> None:
+    client = AsyncMock()
+    vide = {
+        "key": {"code": "59"},
+        "doc_count": 3,
+        "bati": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+        "terrain": {"doc_count": 3, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+    }
+    client.search.side_effect = _sequence_recherches(_composite_page([vide]))
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(0, 0))) as bulk:
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    assert bulk.call_count == 0

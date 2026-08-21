@@ -43,9 +43,16 @@ DVF_ZONES_MAPPING: dict[str, Any] = {
         # filtre la carte pour ne charger que les zones du niveau parent visible.
         "code_parent": KEYWORD,
         "label": KEYWORD,
-        "prix_m2_median": FLOAT,
-        "prix_m2_p25": FLOAT,
-        "prix_m2_p75": FLOAT,
+        # Bâti et terrain nu sont deux marchés distincts, agrégés séparément :
+        # au m², un appartement et un champ ne se comparent pas.
+        "prix_m2_median_bati": FLOAT,
+        "prix_m2_p25_bati": FLOAT,
+        "prix_m2_p75_bati": FLOAT,
+        "nb_mutations_bati": INTEGER,
+        "prix_m2_median_terrain": FLOAT,
+        "prix_m2_p25_terrain": FLOAT,
+        "prix_m2_p75_terrain": FLOAT,
+        "nb_mutations_terrain": INTEGER,
         "nb_mutations": INTEGER,
         "calcule_le": DATE,
     }

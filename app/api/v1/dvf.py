@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Literal
+from typing import Any, Literal
 
 from elasticsearch import AsyncElasticsearch
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -34,7 +34,33 @@ from app.domain.dvf.zones import fetch_serie, fetch_zone, fetch_zones
 
 router = APIRouter(prefix="/dvf", tags=["dvf"])
 
-ZONE_FIELDS = {"code", "label", "prix_m2_median", "prix_m2_p25", "prix_m2_p75", "nb_mutations"}
+Categorie = Literal["bati", "terrain"]
+
+_DESCRIPTION_CATEGORIE = (
+    "`bati` (défaut) agrège les ventes de biens construits, `terrain` celles de "
+    "terrains nus. Les deux marchés ne se comparent pas au m²."
+)
+
+
+def _aplatir(zone: dict[str, Any], categorie: Categorie) -> dict[str, Any] | None:
+    """Ramène un document de zone à la forme exposée, pour la catégorie demandée.
+
+    `None` quand la catégorie n'a pas de médiane sur cette zone — une commune
+    peut n'avoir connu que des ventes de terrain, ou l'inverse.
+    """
+    median = zone.get(f"prix_m2_median_{categorie}")
+    if median is None:
+        return None
+    return {
+        "code": zone["code"],
+        "label": zone.get("label", zone["code"]),
+        "prix_m2_median": median,
+        "prix_m2_p25": zone.get(f"prix_m2_p25_{categorie}"),
+        "prix_m2_p75": zone.get(f"prix_m2_p75_{categorie}"),
+        "nb_mutations": zone.get(f"nb_mutations_{categorie}", 0),
+        "calcule_le": zone.get("calcule_le"),
+        "annee": zone.get("annee"),
+    }
 
 
 def _variation_pct(depuis: float | None, vers: float | None) -> float | None:
@@ -133,6 +159,7 @@ async def prix_carte(
     niveau: Literal["departement", "commune", "section"],
     code_departement: str | None = None,
     code_commune: str | None = None,
+    categorie: Categorie = Query("bati", description=_DESCRIPTION_CATEGORIE),
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> PrixCarteResponse:
@@ -152,11 +179,16 @@ async def prix_carte(
         raise HTTPException(400, "code_commune est requis pour niveau=section")
 
     code_parent = code_departement if niveau == "commune" else code_commune
-    buckets = await fetch_zones(
+    zones = await fetch_zones(
         client, f"{settings.es_index_prefix}-dvf-zones", niveau, code_parent=code_parent
     )
-    if not buckets:
-        buckets = await aggregate_prix_carte(
+    aplaties = [z for z in (_aplatir(zone, categorie) for zone in zones) if z is not None]
+
+    if not aplaties:
+        # Repli tant que les zones n'ont jamais été calculées. Il ne distingue
+        # pas les catégories : la carte reste fonctionnelle, simplement moins
+        # précise, le temps qu'une ingestion passe.
+        aplaties = await aggregate_prix_carte(
             client,
             f"{settings.es_index_prefix}-dvf",
             niveau,
@@ -166,8 +198,9 @@ async def prix_carte(
 
     return PrixCarteResponse(
         niveau=niveau,
-        buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets],
-        calcule_le=next((bucket.get("calcule_le") for bucket in buckets), None),
+        categorie=categorie,
+        buckets=[PrixCarteBucket.model_validate(bucket) for bucket in aplaties],
+        calcule_le=next((bucket.get("calcule_le") for bucket in aplaties), None),
     )
 
 
@@ -175,6 +208,7 @@ async def prix_carte(
 async def prix_serie(
     niveau: Literal["departement", "commune"],
     code: str,
+    categorie: Categorie = Query("bati", description=_DESCRIPTION_CATEGORIE),
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> PrixSerieResponse:
@@ -186,7 +220,8 @@ async def prix_serie(
     Les sections cadastrales n'en ont pas : trop peu de ventes par section et
     par an pour qu'une médiane annuelle veuille dire quelque chose.
     """
-    bruts = await fetch_serie(client, f"{settings.es_index_prefix}-dvf-zones", niveau, code)
+    zones = await fetch_serie(client, f"{settings.es_index_prefix}-dvf-zones", niveau, code)
+    bruts = [z for z in (_aplatir(zone, categorie) for zone in zones) if z is not None]
 
     points: list[PrixSeriePoint] = []
     precedent: float | None = None
@@ -200,6 +235,7 @@ async def prix_serie(
 
     return PrixSerieResponse(
         niveau=niveau,
+        categorie=categorie,
         code=code,
         label=next((brut.get("label") for brut in bruts), None),
         points=points,
@@ -215,14 +251,21 @@ async def prix_serie(
 async def zone(
     niveau: Literal["departement", "commune", "section"],
     code: str,
+    categorie: Categorie = Query("bati", description=_DESCRIPTION_CATEGORIE),
     client: AsyncElasticsearch = Depends(_es_client),
     settings: Settings = Depends(get_settings),
 ) -> ZoneResponse:
     """Agrégat global d'une zone, pour situer une vente dans son marché local."""
     trouvee = await fetch_zone(client, f"{settings.es_index_prefix}-dvf-zones", niveau, code)
-    if trouvee is None:
-        raise HTTPException(404, f"zone {niveau}:{code} inconnue")
-    return ZoneResponse(niveau=niveau, **{k: v for k, v in trouvee.items() if k in ZONE_FIELDS})
+    aplatie = _aplatir(trouvee, categorie) if trouvee else None
+    if aplatie is None:
+        raise HTTPException(404, f"zone {niveau}:{code} sans agrégat {categorie}")
+    return ZoneResponse(niveau=niveau, categorie=categorie, **{
+        k: v for k, v in aplatie.items() if k in ZONE_FIELDS
+    })
+
+
+ZONE_FIELDS = {"code", "label", "prix_m2_median", "prix_m2_p25", "prix_m2_p75", "nb_mutations"}
 
 
 # Déclarée avant `/{id_mutation}` : FastAPI résout les routes dans l'ordre de
