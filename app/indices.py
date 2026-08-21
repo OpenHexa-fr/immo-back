@@ -13,12 +13,10 @@ from openhexa_core.elasticsearch.index import create_index, ensure_alias
 from app.config import Settings
 from app.domain.dpe.mappings import DPE_MAPPING
 from app.domain.dvf.mappings import DVF_MAPPING, DVF_ZONES_MAPPING
-from app.domain.sitage.mappings import SITADEL_MAPPING
 
 DOMAIN_MAPPINGS = {
     "dvf": DVF_MAPPING,
     "dpe": DPE_MAPPING,
-    "sitage": SITADEL_MAPPING,
     # Pas une source ingérée mais un index dérivé de `dvf`, alimenté par
     # `compute_zones` : il suit néanmoins la même convention index+alias.
     "dvf-zones": DVF_ZONES_MAPPING,
