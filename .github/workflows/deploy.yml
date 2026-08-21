@@ -3,13 +3,36 @@ name: Deploy to Azure Container Apps
 on:
   push:
     branches: [main]
+  pull_request:
 
 permissions:
   id-token: write
   contents: read
 
 jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # openhexa-core n'est pas encore publié sur PyPI : même source que
+      # Dockerfile.deploy, sans quoi `pip install -e .` échoue à le résoudre.
+      - run: pip install "git+https://github.com/OpenHexa-fr/core.git@main"
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests
+      - run: mypy app
+      - run: pytest
+
   deploy:
+    # Le déploiement ne part que si la suite passe : sans cette dépendance, les
+    # tests tourneraient en parallèle de la mise en production qu'ils sont
+    # censés protéger.
+    needs: test
+    # Les tests tournent sur les PR, le déploiement non : le credential fédéré
+    # OIDC n'est de toute façon accordé qu'à `refs/heads/main`.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
