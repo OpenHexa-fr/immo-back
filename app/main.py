@@ -15,12 +15,11 @@ from fastapi.middleware.gzip import GZipMiddleware
 from openhexa_core.elasticsearch.client import close_client, get_client
 from openhexa_core.elasticsearch.search import count
 
-from app.api.v1 import dpe, dvf, sitage, status
+from app.api.v1 import dpe, dvf, status
 from app.config import Settings, get_settings
 from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dvf.ingestion import ingest_dvf_years
 from app.domain.dvf.zones import compute_zones, zones_are_computed
-from app.domain.sitage.ingestion import ingest_sitadel
 from app.http_cache import DataVersion, build_etag
 from app.indices import ensure_indices
 
@@ -135,7 +134,7 @@ def _start_polling_tasks(
     client: AsyncElasticsearch, settings: Settings
 ) -> list[asyncio.Task[None]]:
     prefix = settings.es_index_prefix
-    dvf_alias, dpe_alias, sitadel_alias = f"{prefix}-dvf", f"{prefix}-dpe", f"{prefix}-sitage"
+    dvf_alias, dpe_alias = f"{prefix}-dvf", f"{prefix}-dpe"
     zones_alias = f"{prefix}-dvf-zones"
     return [
         asyncio.create_task(_compute_zones_if_missing(client, dvf_alias, zones_alias)),
@@ -157,14 +156,6 @@ def _start_polling_tasks(
                 skip_initial_run=lambda: _index_has_data(client, dpe_alias),
             )
         ),
-        asyncio.create_task(
-            _polling_loop(
-                "sitadel",
-                lambda: ingest_sitadel(client, sitadel_alias, settings.sitadel_data_url),
-                settings.sitadel_polling_interval_seconds,
-                skip_initial_run=lambda: _index_has_data(client, sitadel_alias),
-            )
-        ),
     ]
 
 
@@ -175,8 +166,8 @@ app = FastAPI(title="OpenHexa Immo API", lifespan=lifespan)
 _NO_CACHE_PATHS = {"/api/v1/status"}
 
 # L'ETag dérive de la date du dernier calcul des zones, qui ne suit que les
-# ingestions DVF : l'appliquer aux routes DPE ou Sitadel servirait des 304 sur
-# des données qui, elles, auraient changé.
+# ingestions DVF : l'appliquer aux routes DPE servirait des 304 sur des données
+# qui, elles, auraient changé.
 _ETAG_PATH_PREFIX = "/api/v1/dvf/"
 
 data_version = DataVersion()
@@ -255,5 +246,4 @@ app.add_middleware(
 )
 app.include_router(dvf.router, prefix="/api/v1")
 app.include_router(dpe.router, prefix="/api/v1")
-app.include_router(sitage.router, prefix="/api/v1")
 app.include_router(status.router, prefix="/api/v1")

@@ -14,8 +14,6 @@ URLs validées face aux exports réels (voir les docstrings de chaque module
   au catalogue ; il doit être re-vérifié périodiquement via
   `GET https://data.ademe.fr/data-fair/api/v1/datasets?q=DPE` si l'ingestion
   se met à échouer.
-- Sitadel : distribué via la plateforme DiDo du SDES, pas par téléchargement
-  direct de fichiers statiques.
 """
 
 from __future__ import annotations
@@ -44,10 +42,6 @@ class Settings(ESSettings):
     dpe_data_url: str = (
         "https://data.ademe.fr/data-fair/api/v1/datasets/meg-83tjwtg8dyz4vv7h1dqe"
     )
-    sitadel_data_url: str = (
-        "https://data.statistiques.developpement-durable.gouv.fr/dido/api/v1/"
-        "datafiles/8b35affb-55fc-4c1f-915b-7750f974446a/csv"
-    )
 
     # Durées de cache HTTP des réponses de lecture. Les données ne bougent
     # qu'au rythme du polling ci-dessous (au mieux quotidien), donc servir une
@@ -61,7 +55,6 @@ class Settings(ESSettings):
     # producteurs) : polling nettement moins fréquent que les prix carburants.
     dvf_polling_interval_seconds: int = 7 * 24 * 3600
     dpe_polling_interval_seconds: int = 24 * 3600
-    sitadel_polling_interval_seconds: int = 7 * 24 * 3600
 
     def resolved_dvf_data_urls(self) -> list[str]:
         """URLs des fichiers DVF nationaux pour chaque millésime de `dvf_year_start` à

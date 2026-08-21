@@ -20,7 +20,6 @@ router = APIRouter(tags=["status"])
 class DomainStatus(BaseModel):
     dvf: bool
     dpe: bool
-    sitage: bool
 
 
 async def _es_client() -> AsyncElasticsearch:
@@ -36,5 +35,4 @@ async def status(
     prefix = settings.es_index_prefix
     dvf_count = await count(client, f"{prefix}-dvf")
     dpe_count = await count(client, f"{prefix}-dpe")
-    sitage_count = await count(client, f"{prefix}-sitage")
-    return DomainStatus(dvf=dvf_count > 0, dpe=dpe_count > 0, sitage=sitage_count > 0)
+    return DomainStatus(dvf=dvf_count > 0, dpe=dpe_count > 0)

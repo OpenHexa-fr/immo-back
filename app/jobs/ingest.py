@@ -29,14 +29,13 @@ from app.domain.dpe.ingestion import ingest_dpe
 from app.domain.dvf.ingestion import ingest_dvf_years
 from app.domain.dvf.jointure import joindre_dpe
 from app.domain.dvf.zones import compute_zones
-from app.domain.sitage.ingestion import ingest_sitadel
 from app.indices import alias_for, ensure_indices
 
 logger = structlog.get_logger(__name__)
 
 # L'ordre vaut pour `--source all` : `jointure` a besoin de DVF et DPE
 # fraîchement ingérés, `zones` dérive de DVF.
-SOURCES = ("dvf", "dpe", "sitadel", "jointure", "zones")
+SOURCES = ("dvf", "dpe", "jointure", "zones")
 
 
 async def _run_source(
@@ -55,10 +54,6 @@ async def _run_source(
     if source == "jointure":
         return await joindre_dpe(
             client, alias_for(settings, "dvf"), alias_for(settings, "dpe")
-        )
-    if source == "sitadel":
-        return await ingest_sitadel(
-            client, alias_for(settings, "sitage"), settings.sitadel_data_url
         )
     if source == "zones":
         return await compute_zones(
