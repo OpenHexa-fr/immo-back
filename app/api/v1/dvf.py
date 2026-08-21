@@ -21,6 +21,7 @@ from app.domain.dvf.schemas import (
     PrixCarteResponse,
     PrixSeriePoint,
     PrixSerieResponse,
+    ZoneResponse,
 )
 from app.domain.dvf.search import (
     CARTE_SOURCE_FIELDS,
@@ -29,9 +30,22 @@ from app.domain.dvf.search import (
     get_parcelle_mutations,
     search_dvf,
 )
-from app.domain.dvf.zones import fetch_serie, fetch_zones
+from app.domain.dvf.zones import fetch_serie, fetch_zone, fetch_zones
 
 router = APIRouter(prefix="/dvf", tags=["dvf"])
+
+ZONE_FIELDS = {"code", "label", "prix_m2_median", "prix_m2_p25", "prix_m2_p75", "nb_mutations"}
+
+
+def _variation_pct(depuis: float | None, vers: float | None) -> float | None:
+    """Variation relative en pourcentage, arrondie au dixième.
+
+    `None` si l'une des bornes manque ou si la référence est nulle — une
+    variation depuis zéro n'a pas de sens.
+    """
+    if depuis is None or vers is None or depuis == 0:
+        return None
+    return round((vers - depuis) / depuis * 100, 1)
 
 
 async def _es_client() -> AsyncElasticsearch:
@@ -172,15 +186,43 @@ async def prix_serie(
     Les sections cadastrales n'en ont pas : trop peu de ventes par section et
     par an pour qu'une médiane annuelle veuille dire quelque chose.
     """
-    points = await fetch_serie(
-        client, f"{settings.es_index_prefix}-dvf-zones", niveau, code
-    )
+    bruts = await fetch_serie(client, f"{settings.es_index_prefix}-dvf-zones", niveau, code)
+
+    points: list[PrixSeriePoint] = []
+    precedent: float | None = None
+    for brut in bruts:
+        point = PrixSeriePoint.model_validate(brut)
+        # Les points sont triés par millésime croissant : chacun se compare au
+        # précédent, le premier n'ayant rien à quoi se comparer.
+        point.evolution_pct = _variation_pct(precedent, point.prix_m2_median)
+        precedent = point.prix_m2_median
+        points.append(point)
+
     return PrixSerieResponse(
         niveau=niveau,
         code=code,
-        label=next((point.get("label") for point in points), None),
-        points=[PrixSeriePoint.model_validate(point) for point in points],
+        label=next((brut.get("label") for brut in bruts), None),
+        points=points,
+        evolution_totale_pct=(
+            _variation_pct(points[0].prix_m2_median, points[-1].prix_m2_median)
+            if len(points) > 1
+            else None
+        ),
     )
+
+
+@router.get("/zone", response_model=ZoneResponse)
+async def zone(
+    niveau: Literal["departement", "commune", "section"],
+    code: str,
+    client: AsyncElasticsearch = Depends(_es_client),
+    settings: Settings = Depends(get_settings),
+) -> ZoneResponse:
+    """Agrégat global d'une zone, pour situer une vente dans son marché local."""
+    trouvee = await fetch_zone(client, f"{settings.es_index_prefix}-dvf-zones", niveau, code)
+    if trouvee is None:
+        raise HTTPException(404, f"zone {niveau}:{code} inconnue")
+    return ZoneResponse(niveau=niveau, **{k: v for k, v in trouvee.items() if k in ZONE_FIELDS})
 
 
 # Déclarée avant `/{id_mutation}` : FastAPI résout les routes dans l'ordre de
