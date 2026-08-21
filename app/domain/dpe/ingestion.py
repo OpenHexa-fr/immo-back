@@ -26,6 +26,26 @@ logger = structlog.get_logger(__name__)
 
 _PAGE_SIZE = 1000
 
+# Le dataset expose 145 colonnes ; on en conserve treize. Sans `select`, chaque
+# page de 1 000 lignes pèse 6 Mo dont 94 % sont jetés — soit ~90 Go transférés
+# pour une moisson complète, contre 6 Go en ne demandant que l'utile (mesuré sur
+# l'API réelle). La liste doit rester alignée sur `_row_to_document`.
+_CHAMPS_UTILES = (
+    "numero_dpe",
+    "date_etablissement_dpe",
+    "date_reception_dpe",
+    "etiquette_dpe",
+    "etiquette_ges",
+    "nom_commune_ban",
+    "code_postal_ban",
+    "surface_habitable_logement",
+    "identifiant_ban",
+    "adresse_ban",
+    "score_ban",
+    "type_batiment",
+    "_geopoint",
+)
+
 
 async def fetch_dpe_pages(
     source_url: str, depuis: date | None = None
@@ -39,7 +59,10 @@ async def fetch_dpe_pages(
     """
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http_client:
         next_url: str | None = f"{source_url}/lines"
-        params: dict[str, Any] | None = {"size": _PAGE_SIZE}
+        params: dict[str, Any] | None = {
+            "size": _PAGE_SIZE,
+            "select": ",".join(_CHAMPS_UTILES),
+        }
         if depuis is not None and params is not None:
             params["qs"] = f"date_reception_dpe:[{depuis.isoformat()} TO *]"
         while next_url:

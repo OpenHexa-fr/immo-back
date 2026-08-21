@@ -188,3 +188,41 @@ def test_row_to_document_tolere_un_geopoint_absent_ou_malforme() -> None:
     """35 % des lignes ne sont pas géocodées par l'ADEME."""
     assert _row_to_document({"numero_dpe": "X"})["location"] is None
     assert _row_to_document({"numero_dpe": "X", "_geopoint": "n/a"})["location"] is None
+
+
+async def test_la_moisson_ne_demande_que_les_champs_conserves(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """145 colonnes exposées, 13 gardées : sans `select`, 94 % du transfert est jeté."""
+    vus: dict[str, Any] = {}
+
+    class _Reponse:
+        def raise_for_status(self) -> None:
+            return None
+
+        def json(self) -> dict[str, object]:
+            return {"results": [], "next": None}
+
+    async def faux_get(
+        self: httpx.AsyncClient, url: str, params: dict[str, Any] | None = None
+    ) -> _Reponse:
+        vus.update(params or {})
+        return _Reponse()
+
+    monkeypatch.setattr(httpx.AsyncClient, "get", faux_get)
+    [page async for page in fetch_dpe_pages("https://exemple.test/dataset")]
+
+    assert "select" in vus
+    assert "numero_dpe" in vus["select"]
+    # Un champ non conservé n'a rien à faire dans la requête.
+    assert "conso_chauffage_generateur_n1_installation_n1" not in vus["select"]
+
+
+def test_les_champs_selectionnes_couvrent_le_document_produit() -> None:
+    """Un champ retiré de la sélection sortirait silencieusement du document."""
+    from app.domain.dpe.ingestion import _CHAMPS_UTILES
+
+    document = _row_to_document({champ: "x" for champ in _CHAMPS_UTILES})
+
+    renseignes = {cle for cle, valeur in document.items() if valeur is not None}
+    assert renseignes >= {"numero_dpe", "identifiant_ban", "date_reception", "etiquette_dpe"}
