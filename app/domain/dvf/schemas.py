@@ -129,6 +129,9 @@ class PrixSeriePoint(BaseModel):
     prix_m2_p25: float | None = None
     prix_m2_p75: float | None = None
     nb_mutations: int
+    # Variation par rapport au millésime précédent, en pourcentage. `None` sur
+    # le premier point de la série, qui n'a rien à quoi se comparer.
+    evolution_pct: float | None = None
 
 
 class PrixSerieResponse(BaseModel):
@@ -136,6 +139,20 @@ class PrixSerieResponse(BaseModel):
     code: str
     label: str | None = None
     points: list[PrixSeriePoint]
+    # Variation entre le premier et le dernier millésime de la série.
+    evolution_totale_pct: float | None = None
+
+
+class ZoneResponse(BaseModel):
+    """Agrégat global d'une zone, pour situer une vente dans son marché local."""
+
+    niveau: str
+    code: str
+    label: str
+    prix_m2_median: float
+    prix_m2_p25: float | None = None
+    prix_m2_p75: float | None = None
+    nb_mutations: int
 
 
 class PrixCarteResponse(BaseModel):

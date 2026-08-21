@@ -331,6 +331,28 @@ async def fetch_zones(
     return [hit["_source"] for hit in response["hits"]["hits"]]
 
 
+async def fetch_zone(
+    client: AsyncElasticsearch, zones_index: str, niveau: str, code: str
+) -> dict[str, Any] | None:
+    """Agrégat global d'une zone unique, tous millésimes confondus.
+
+    Sert à situer une vente par rapport à son marché local sans rapatrier
+    l'ensemble des zones voisines, comme le fait la choroplèthe.
+    """
+    response = await client.search(
+        index=zones_index,
+        query={
+            "bool": {
+                "filter": [{"term": {"niveau": niveau}}, {"term": {"code": code}}],
+                "must_not": [{"exists": {"field": "annee"}}],
+            }
+        },
+        size=1,
+    )
+    hits = response["hits"]["hits"]
+    return dict(hits[0]["_source"]) if hits else None
+
+
 async def fetch_serie(
     client: AsyncElasticsearch, zones_index: str, niveau: str, code: str
 ) -> list[dict[str, Any]]:

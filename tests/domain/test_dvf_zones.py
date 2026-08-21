@@ -9,6 +9,7 @@ from app.domain.dvf.zones import (
     NIVEAUX_SERIE,
     compute_zones,
     fetch_serie,
+    fetch_zone,
     fetch_zones,
     zones_are_computed,
 )
@@ -256,3 +257,25 @@ async def test_fetch_serie_ne_retourne_que_les_points_annuels_tries() -> None:
     kwargs = client.search.call_args.kwargs
     assert {"exists": {"field": "annee"}} in kwargs["query"]["bool"]["filter"]
     assert kwargs["sort"] == [{"annee": "asc"}]
+
+
+async def test_fetch_zone_retourne_une_seule_zone_globale() -> None:
+    client = AsyncMock()
+    client.search.return_value = {
+        "hits": {"hits": [{"_source": {"code": "59043", "prix_m2_median": 1800.0}}]}
+    }
+
+    zone = await fetch_zone(client, "openhexa-dvf-zones", "commune", "59043")
+
+    assert zone == {"code": "59043", "prix_m2_median": 1800.0}
+    # Sans cette exclusion, on pourrait tomber sur un point de série annuelle.
+    assert client.search.call_args.kwargs["query"]["bool"]["must_not"] == [
+        {"exists": {"field": "annee"}}
+    ]
+
+
+async def test_fetch_zone_retourne_none_si_inconnue() -> None:
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+
+    assert await fetch_zone(client, "openhexa-dvf-zones", "commune", "00000") is None
