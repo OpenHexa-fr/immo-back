@@ -56,9 +56,27 @@ NIVEAUX = tuple(_LEVELS)
 NIVEAUX_SERIE = ("departement", "commune")
 
 
+# Bornes de plausibilité du prix au m². En deçà, il s'agit de cessions à valeur
+# symbolique (donations, ventes à 1 €) ou de très grandes parcelles agricoles
+# dont le rapport prix/surface n'a pas de sens immobilier. Au-delà, aucune
+# transaction française n'est crédible — le haut du marché parisien plafonne
+# autour de 25 000 €/m². Sans ces bornes, une section entière peut afficher une
+# médiane de 273 209 €/m² (constaté à Lille) ou de 0, ce qui fausse la
+# choroplèthe et rend absurde tout écart calculé par rapport à elle.
+_PRIX_M2_MIN = 10
+_PRIX_M2_MAX = 50_000
+
+
 def _zones_query() -> dict[str, Any]:
-    """Seules les mutations dont le prix au m² est calculable alimentent une médiane."""
-    return {"bool": {"filter": [{"exists": {"field": "prix_m2"}}]}}
+    """Mutations dont le prix au m² est calculable *et* plausible."""
+    return {
+        "bool": {
+            "filter": [
+                {"exists": {"field": "prix_m2"}},
+                {"range": {"prix_m2": {"gte": _PRIX_M2_MIN, "lte": _PRIX_M2_MAX}}},
+            ]
+        }
+    }
 
 
 async def _iter_composite_buckets(
