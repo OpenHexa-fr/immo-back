@@ -10,6 +10,16 @@ from openhexa_core.elasticsearch.search import build_filters, paginate
 from app.domain.dvf.schemas import DVFSearchParams
 
 
+def _clause_intervalle(borne_min: Any, borne_max: Any) -> dict[str, Any] | None:
+    """Clause `range` Elasticsearch, ou `None` si aucune borne n'est fournie."""
+    clause: dict[str, Any] = {}
+    if borne_min is not None:
+        clause["gte"] = borne_min
+    if borne_max is not None:
+        clause["lte"] = borne_max
+    return clause or None
+
+
 def _build_dvf_query(params: DVFSearchParams) -> dict[str, Any]:
     filters = build_filters(
         commune=params.commune,
@@ -24,29 +34,20 @@ def _build_dvf_query(params: DVFSearchParams) -> dict[str, Any]:
     # validation de la réponse.
     filters.append({"exists": {"field": "valeur_fonciere"}})
 
-    price_range: dict[str, Any] = {}
-    if params.valeur_fonciere_min is not None:
-        price_range["gte"] = params.valeur_fonciere_min
-    if params.valeur_fonciere_max is not None:
-        price_range["lte"] = params.valeur_fonciere_max
-    if price_range:
-        filters.append({"range": {"valeur_fonciere": price_range}})
-
-    surface_range: dict[str, Any] = {}
-    if params.surface_min is not None:
-        surface_range["gte"] = params.surface_min
-    if params.surface_max is not None:
-        surface_range["lte"] = params.surface_max
-    if surface_range:
-        filters.append({"range": {"surface_reelle_bati": surface_range}})
-
-    date_range: dict[str, Any] = {}
-    if params.date_mutation_min is not None:
-        date_range["gte"] = params.date_mutation_min
-    if params.date_mutation_max is not None:
-        date_range["lte"] = params.date_mutation_max
-    if date_range:
-        filters.append({"range": {"date_mutation": date_range}})
+    # Six intervalles construits à l'identique : les décrire en table évite
+    # autant de blocs conditionnels recopiés.
+    intervalles: list[tuple[str, Any, Any]] = [
+        ("valeur_fonciere", params.valeur_fonciere_min, params.valeur_fonciere_max),
+        ("surface_reelle_bati", params.surface_min, params.surface_max),
+        ("surface_terrain", params.surface_terrain_min, params.surface_terrain_max),
+        ("nombre_pieces_principales", params.pieces_min, params.pieces_max),
+        ("prix_m2", params.prix_m2_min, params.prix_m2_max),
+        ("date_mutation", params.date_mutation_min, params.date_mutation_max),
+    ]
+    for champ, borne_min, borne_max in intervalles:
+        clause = _clause_intervalle(borne_min, borne_max)
+        if clause is not None:
+            filters.append({"range": {champ: clause}})
 
     # Une emprise rectangulaire décrit exactement ce qu'affiche une carte : la
     # requérir en `geo_distance` imposerait un cercle circonscrit au viewport,
