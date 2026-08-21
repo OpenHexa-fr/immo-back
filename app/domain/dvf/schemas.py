@@ -121,6 +121,23 @@ class PrixCarteBucket(BaseModel):
     nb_mutations: int
 
 
+class PrixSeriePoint(BaseModel):
+    """Prix médian d'une zone pour un millésime donné."""
+
+    annee: int
+    prix_m2_median: float
+    prix_m2_p25: float | None = None
+    prix_m2_p75: float | None = None
+    nb_mutations: int
+
+
+class PrixSerieResponse(BaseModel):
+    niveau: str
+    code: str
+    label: str | None = None
+    points: list[PrixSeriePoint]
+
+
 class PrixCarteResponse(BaseModel):
     niveau: str
     buckets: list[PrixCarteBucket]

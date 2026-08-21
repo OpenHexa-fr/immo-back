@@ -35,6 +35,10 @@ DVF_ZONES_MAPPING: dict[str, Any] = {
     "properties": {
         "niveau": KEYWORD,  # departement | commune | section
         "code": KEYWORD,
+        # Millésime de la mutation. Absent sur les documents « tous millésimes
+        # confondus » qui alimentent la choroplèthe : c'est ce qui distingue la
+        # vue d'ensemble des points d'une série temporelle.
+        "annee": INTEGER,
         # Département d'une commune, commune d'une section : c'est ce champ que
         # filtre la carte pour ne charger que les zones du niveau parent visible.
         "code_parent": KEYWORD,

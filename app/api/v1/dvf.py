@@ -19,6 +19,8 @@ from app.domain.dvf.schemas import (
     ParcelleResponse,
     PrixCarteBucket,
     PrixCarteResponse,
+    PrixSeriePoint,
+    PrixSerieResponse,
 )
 from app.domain.dvf.search import (
     CARTE_SOURCE_FIELDS,
@@ -27,7 +29,7 @@ from app.domain.dvf.search import (
     get_parcelle_mutations,
     search_dvf,
 )
-from app.domain.dvf.zones import fetch_zones
+from app.domain.dvf.zones import fetch_serie, fetch_zones
 
 router = APIRouter(prefix="/dvf", tags=["dvf"])
 
@@ -152,6 +154,32 @@ async def prix_carte(
         niveau=niveau,
         buckets=[PrixCarteBucket.model_validate(bucket) for bucket in buckets],
         calcule_le=next((bucket.get("calcule_le") for bucket in buckets), None),
+    )
+
+
+@router.get("/prix-serie", response_model=PrixSerieResponse)
+async def prix_serie(
+    niveau: Literal["departement", "commune"],
+    code: str,
+    client: AsyncElasticsearch = Depends(_es_client),
+    settings: Settings = Depends(get_settings),
+) -> PrixSerieResponse:
+    """Évolution annuelle du prix médian au m² d'une zone.
+
+    La choroplèthe affiche une médiane tous millésimes confondus, qui écrase le
+    mouvement du marché. Cette série le rend visible.
+
+    Les sections cadastrales n'en ont pas : trop peu de ventes par section et
+    par an pour qu'une médiane annuelle veuille dire quelque chose.
+    """
+    points = await fetch_serie(
+        client, f"{settings.es_index_prefix}-dvf-zones", niveau, code
+    )
+    return PrixSerieResponse(
+        niveau=niveau,
+        code=code,
+        label=next((point.get("label") for point in points), None),
+        points=[PrixSeriePoint.model_validate(point) for point in points],
     )
 
 
