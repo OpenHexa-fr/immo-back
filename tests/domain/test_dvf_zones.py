@@ -137,8 +137,20 @@ async def test_compute_zones_aggregates_only_mutations_with_prix_m2() -> None:
     with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(0, 0))):
         await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
 
-    query = client.search.call_args_list[0].kwargs["query"]
-    assert query == {"bool": {"filter": [{"exists": {"field": "prix_m2"}}]}}
+    filtres = client.search.call_args_list[0].kwargs["query"]["bool"]["filter"]
+    assert {"exists": {"field": "prix_m2"}} in filtres
+
+
+async def test_compute_zones_ecarte_les_prix_au_m2_invraisemblables() -> None:
+    """Une section entière peut afficher 273 209 EUR/m² sans ces bornes (vu à Lille)."""
+    client = AsyncMock()
+    client.search.side_effect = _sequence_recherches()
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(0, 0))):
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    filtres = client.search.call_args_list[0].kwargs["query"]["bool"]["filter"]
+    assert {"range": {"prix_m2": {"gte": 10, "lte": 50_000}}} in filtres
 
 
 async def test_compute_zones_returns_totals_across_levels() -> None:
