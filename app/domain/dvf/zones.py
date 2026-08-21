@@ -49,6 +49,12 @@ _LEVELS: dict[str, dict[str, str | None]] = {
 
 NIVEAUX = tuple(_LEVELS)
 
+# Niveaux pour lesquels une série annuelle est calculée. Les sections
+# cadastrales en sont exclues à dessein : quelques ventes par section et par an
+# ne donnent pas une médiane robuste, et le volume exploserait (des centaines de
+# milliers de sections multipliées par le nombre de millésimes).
+NIVEAUX_SERIE = ("departement", "commune")
+
 
 def _zones_query() -> dict[str, Any]:
     """Seules les mutations dont le prix au m² est calculable alimentent une médiane."""
@@ -141,6 +147,101 @@ async def _iter_zone_documents(
         }
 
 
+async def _iter_serie_documents(
+    client: AsyncElasticsearch, dvf_index: str, niveau: str, calcule_le: str
+) -> AsyncIterator[dict[str, Any]]:
+    """Documents d'agrégat par zone **et par millésime**, pour la série temporelle.
+
+    La carte affiche une médiane tous millésimes confondus, ce qui écrase
+    justement l'information la plus parlante : entre 2021 et 2025, le marché
+    s'est retourné. Une dimension annuelle suffit à la faire apparaître.
+    """
+    level = _LEVELS[niveau]
+    code_field, parent_field, label_field = (
+        level["code_field"],
+        level["parent_field"],
+        level["label_field"],
+    )
+
+    sources: list[dict[str, Any]] = []
+    if parent_field is not None:
+        sources.append({"parent": {"terms": {"field": parent_field}}})
+    sources.append({"code": {"terms": {"field": code_field}}})
+    sources.append(
+        {
+            "annee": {
+                "date_histogram": {
+                    "field": "date_mutation",
+                    "calendar_interval": "year",
+                    "format": "yyyy",
+                }
+            }
+        }
+    )
+
+    aggs: dict[str, Any] = {
+        "prix": {"percentiles": {"field": "prix_m2", "percents": [25, 50, 75]}}
+    }
+    if label_field is not None:
+        aggs["label"] = {"top_hits": {"size": 1, "_source": [label_field]}}
+
+    async for bucket in _iter_composite_buckets(client, dvf_index, sources, aggs):
+        values = bucket["prix"]["values"]
+        median = values["50.0"]
+        if median is None:
+            continue
+
+        code = bucket["key"]["code"]
+        annee = int(str(bucket["key"]["annee"])[:4])
+        label = code
+        if label_field is not None:
+            hits = bucket["label"]["hits"]["hits"]
+            if hits:
+                label = hits[0]["_source"].get(label_field, code)
+
+        yield {
+            "_id": f"{niveau}:{code}:{annee}",
+            "niveau": niveau,
+            "code": code,
+            "annee": annee,
+            "code_parent": bucket["key"].get("parent"),
+            "label": label,
+            "prix_m2_median": round(median, 2),
+            "prix_m2_p25": round(values["25.0"], 2) if values["25.0"] is not None else None,
+            "prix_m2_p75": round(values["75.0"], 2) if values["75.0"] is not None else None,
+            "nb_mutations": bucket["doc_count"],
+            "calcule_le": calcule_le,
+        }
+
+
+async def _indexer_par_lots(
+    client: AsyncElasticsearch,
+    zones_alias: str,
+    documents: AsyncIterator[dict[str, Any]],
+) -> tuple[int, int]:
+    """Indexe un flux de documents par lots bornés.
+
+    Les sections cadastrales se comptent en centaines de milliers : la mémoire
+    du process ne doit pas dépendre du nombre de zones. `bulk_index` n'accepte
+    qu'un itérable synchrone, d'où l'accumulation explicite.
+    """
+    success = 0
+    errors = 0
+    chunk: list[dict[str, Any]] = []
+    async for document in documents:
+        chunk.append(document)
+        if len(chunk) >= _BULK_CHUNK_SIZE:
+            chunk_success, chunk_errors = await bulk_index(client, zones_alias, chunk)
+            success += chunk_success
+            errors += chunk_errors
+            chunk = []
+    if chunk:
+        chunk_success, chunk_errors = await bulk_index(client, zones_alias, chunk)
+        success += chunk_success
+        errors += chunk_errors
+    return success, errors
+
+
 async def compute_zones(
     client: AsyncElasticsearch, dvf_index: str, zones_alias: str
 ) -> tuple[int, int]:
@@ -158,27 +259,20 @@ async def compute_zones(
     total_errors = 0
 
     for niveau in NIVEAUX:
-        success, errors = 0, 0
-        # Les sections cadastrales se comptent en centaines de milliers :
-        # l'indexation se fait par lots pour que la mémoire du process ne
-        # dépende pas du nombre de zones. `bulk_index` n'accepte qu'un itérable
-        # synchrone, d'où l'accumulation explicite.
-        chunk: list[dict[str, Any]] = []
-        async for document in _iter_zone_documents(client, dvf_index, niveau, calcule_le):
-            chunk.append(document)
-            if len(chunk) >= _BULK_CHUNK_SIZE:
-                chunk_success, chunk_errors = await bulk_index(client, zones_alias, chunk)
-                success += chunk_success
-                errors += chunk_errors
-                chunk = []
-        if chunk:
-            chunk_success, chunk_errors = await bulk_index(client, zones_alias, chunk)
-            success += chunk_success
-            errors += chunk_errors
-
+        success, errors = await _indexer_par_lots(
+            client, zones_alias, _iter_zone_documents(client, dvf_index, niveau, calcule_le)
+        )
         total_success += success
         total_errors += errors
         logger.info("dvf_zones_level_computed", niveau=niveau, success=success, errors=errors)
+
+    for niveau in NIVEAUX_SERIE:
+        success, errors = await _indexer_par_lots(
+            client, zones_alias, _iter_serie_documents(client, dvf_index, niveau, calcule_le)
+        )
+        total_success += success
+        total_errors += errors
+        logger.info("dvf_serie_level_computed", niveau=niveau, success=success, errors=errors)
 
     logger.info("dvf_zones_computed", success=total_success, errors=total_errors)
     return total_success, total_errors
@@ -228,8 +322,31 @@ async def fetch_zones(
 
     response = await client.search(
         index=zones_index,
-        query={"bool": {"filter": filters}},
+        # Les points de série temporelle partagent l'index : les exclure évite
+        # de renvoyer chaque zone une fois par millésime à la choroplèthe.
+        query={"bool": {"filter": filters, "must_not": [{"exists": {"field": "annee"}}]}},
         size=_MAX_ZONES_PER_PARENT,
         sort=[{"code": "asc"}],
+    )
+    return [hit["_source"] for hit in response["hits"]["hits"]]
+
+
+async def fetch_serie(
+    client: AsyncElasticsearch, zones_index: str, niveau: str, code: str
+) -> list[dict[str, Any]]:
+    """Série annuelle du prix médian au m² d'une zone, du plus ancien au plus récent."""
+    response = await client.search(
+        index=zones_index,
+        query={
+            "bool": {
+                "filter": [
+                    {"term": {"niveau": niveau}},
+                    {"term": {"code": code}},
+                    {"exists": {"field": "annee"}},
+                ]
+            }
+        },
+        size=100,
+        sort=[{"annee": "asc"}],
     )
     return [hit["_source"] for hit in response["hits"]["hits"]]
