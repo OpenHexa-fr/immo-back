@@ -173,11 +173,13 @@ async def test_le_parcours_utilise_un_point_in_time() -> None:
 
 
 async def test_une_mutation_sans_dpe_n_est_pas_une_erreur() -> None:
-    """Le second membre du retour compte les mutations examinées, pas des erreurs.
+    """Le second membre du retour compte les erreurs bulk réelles, pas les
+    mutations examinées.
 
-    Une première version retournait `examinées - rapprochées`, que
-    l'ordonnanceur lisait comme un décompte d'erreurs : le job se déclarait en
-    échec à chaque passage alors qu'il avait réussi.
+    Deux contrats erronés ont précédé celui-ci : `examinées - rapprochées` puis
+    `examinées` telles quelles, tous deux lus comme un décompte d'erreurs par
+    l'ordonnanceur — qui déclarait le job en échec à chaque passage alors
+    qu'aucune écriture n'échouait réellement.
     """
     client = _client_avec_pit()
     client.search.side_effect = [
@@ -194,6 +196,64 @@ async def test_une_mutation_sans_dpe_n_est_pas_une_erreur() -> None:
         _page([]),
     ]
 
-    rapproches, examines = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+    rapproches, erreurs = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
 
-    assert (rapproches, examines) == (0, 1)
+    # Aucune écriture n'a été tentée (aucun DPE trouvé) : zéro erreur, pas 1.
+    assert (rapproches, erreurs) == (0, 0)
+
+
+async def test_le_decompte_d_erreurs_ne_gonfle_pas_avec_le_volume_examine() -> None:
+    """Verrou direct contre le bug constaté en production : un grand nombre de
+    mutations examinées sans correspondance ne doit jamais se traduire par un
+    grand nombre d'« erreurs » signalées à l'ordonnanceur."""
+    client = _client_avec_pit()
+    # Beaucoup de mutations, aucune ne trouve de DPE correspondant.
+    gros_lot = [
+        {
+            "_id": f"m{i}",
+            "sort": [i],
+            "_source": {"identifiant_ban": f"id{i}", "date_mutation": "2024-01-01"},
+        }
+        for i in range(500)
+    ]
+    client.search.side_effect = [_page(gros_lot), _page([]), _page([])]
+
+    _, erreurs = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+
+    assert erreurs == 0
+
+
+async def test_les_echecs_bulk_reels_sont_comptes() -> None:
+    """Une vraie erreur d'écriture Elasticsearch doit, elle, remonter."""
+    client = _client_avec_pit()
+    client.search.side_effect = [
+        _page(
+            [
+                {
+                    "_id": "m1",
+                    "sort": [1],
+                    "_source": {"identifiant_ban": "x", "date_mutation": "2024-03-01"},
+                }
+            ]
+        ),
+        _page(
+            [
+                {
+                    "_source": {
+                        "identifiant_ban": "x",
+                        "etiquette_dpe": "C",
+                        "date_etablissement": "2023-01-01",
+                    }
+                }
+            ]
+        ),
+        _page([]),
+    ]
+
+    with patch(
+        "app.domain.dvf.jointure.async_bulk",
+        new=AsyncMock(return_value=(0, [{"update": {"error": "version_conflict"}}])),
+    ):
+        rapproches, erreurs = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+
+    assert (rapproches, erreurs) == (0, 1)

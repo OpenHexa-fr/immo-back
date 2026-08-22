@@ -93,11 +93,15 @@ async def joindre_dpe(
 ) -> tuple[int, int]:
     """Renseigne `etiquette_dpe` sur les mutations DVF rapprochables.
 
-    Retourne `(rapprochées, examinées)`. Attention : une mutation examinée sans
-    correspondance n'est **pas** une erreur — c'est le cas normal d'un bien sans
-    diagnostic connu à son adresse. Une première version retournait
-    `(rapprochées, examinées - rapprochées)`, que l'ordonnanceur interprétait
-    comme un décompte d'erreurs et qui faisait échouer le job à chaque passage.
+    Retourne `(rapprochées, erreurs_bulk)`. `erreurs_bulk` compte les échecs
+    réels d'écriture Elasticsearch — pas les mutations examinées sans
+    correspondance, qui sont le cas normal d'un bien sans diagnostic connu à son
+    adresse. Deux contrats erronés ont précédé celui-ci :
+    - `(rapprochées, examinées - rapprochées)`, où l'ordonnanceur lisait le
+      second membre comme un décompte d'erreurs et faisait échouer le job à
+      chaque passage, alors qu'aucune écriture n'échouait réellement ;
+    - `(rapprochées, examinées)`, qui reproduisait exactement le même défaut
+      puisque `examinées` est presque toujours non nul.
 
     Le parcours s'appuie sur un **point-in-time**. Sans lui, `search_after` sur
     `_doc` dérive : la jointure écrit dans l'index qu'elle parcourt, chaque mise
@@ -107,6 +111,7 @@ async def joindre_dpe(
     """
     rapproches = 0
     examines = 0
+    erreurs_bulk = 0
     search_after: list[Any] | None = None
 
     pit = await client.open_point_in_time(index=dvf_index, keep_alive=_PIT_DUREE)
@@ -168,11 +173,26 @@ async def joindre_dpe(
                 # nombre, selon `stats_only` — même normalisation que
                 # `core.bulk_index`.
                 nb_erreurs = len(erreurs) if isinstance(erreurs, list) else int(erreurs)
+                erreurs_bulk += nb_erreurs
                 if nb_erreurs:
-                    logger.warning("dvf_dpe_jointure_erreurs", erreurs=nb_erreurs)
+                    logger.warning(
+                        "dvf_dpe_jointure_erreurs",
+                        erreurs=nb_erreurs,
+                        # Journalisé pour diagnostiquer un écart déjà observé
+                        # entre ce compteur et l'état réel de l'index (mesuré
+                        # via requête directe) : `succes` a valu 0 sur une
+                        # exécution entière malgré une progression réelle
+                        # constatée côté Elasticsearch.
+                        exemple=erreurs[0] if isinstance(erreurs, list) and erreurs else None,
+                    )
     finally:
         with contextlib.suppress(Exception):
             await client.close_point_in_time(id=pit_id)
 
-    logger.info("dvf_dpe_jointure_terminee", examines=examines, rapproches=rapproches)
-    return rapproches, examines
+    logger.info(
+        "dvf_dpe_jointure_terminee",
+        examines=examines,
+        rapproches=rapproches,
+        erreurs_bulk=erreurs_bulk,
+    )
+    return rapproches, erreurs_bulk
