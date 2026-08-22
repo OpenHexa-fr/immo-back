@@ -59,14 +59,41 @@ def test_meilleur_dpe_retient_le_plus_recent_anterieur() -> None:
         {"etiquette_dpe": "D", "date_etablissement": "2023-02-10"},
     ]
 
-    assert _meilleur_dpe(diagnostics, "2024-01-01") == "D"
+    assert _meilleur_dpe(diagnostics, "2024-01-01") == ("D", False)
 
 
-def test_meilleur_dpe_ignore_un_diagnostic_posterieur_a_la_vente() -> None:
-    """Un DPE établi après la vente peut décrire un logement rénové depuis."""
-    diagnostics = [{"etiquette_dpe": "A", "date_etablissement": "2025-06-01"}]
+def test_meilleur_dpe_accepte_un_posterieur_proche_a_defaut_d_anterieur() -> None:
+    """Fréquent sur 2021-2022, avant la généralisation du DPE : aucun diagnostic
+    antérieur n'existe. Le repli sur un DPE postérieur proche est marqué
+    explicitement, pour que l'interface affiche la réserve."""
+    diagnostics = [{"etiquette_dpe": "A", "date_etablissement": "2024-06-01"}]  # +152 jours
+
+    assert _meilleur_dpe(diagnostics, "2024-01-01") == ("A", True)
+
+
+def test_meilleur_dpe_rejette_un_posterieur_hors_fenetre() -> None:
+    """Au-delà de 18 mois, le risque de rénovation entre-temps n'est plus négligeable."""
+    diagnostics = [{"etiquette_dpe": "A", "date_etablissement": "2025-08-01"}]  # +578 jours
 
     assert _meilleur_dpe(diagnostics, "2024-01-01") is None
+
+
+def test_meilleur_dpe_prefere_toujours_l_anterieur_au_posterieur() -> None:
+    diagnostics = [
+        {"etiquette_dpe": "A", "date_etablissement": "2024-03-01"},  # postérieur proche
+        {"etiquette_dpe": "D", "date_etablissement": "2023-02-10"},  # antérieur
+    ]
+
+    assert _meilleur_dpe(diagnostics, "2024-01-01") == ("D", False)
+
+
+def test_meilleur_dpe_retient_le_posterieur_le_plus_proche() -> None:
+    diagnostics = [
+        {"etiquette_dpe": "A", "date_etablissement": "2024-02-01"},
+        {"etiquette_dpe": "B", "date_etablissement": "2024-08-01"},
+    ]
+
+    assert _meilleur_dpe(diagnostics, "2024-01-01") == ("A", True)
 
 
 def _page(hits: list[dict[str, Any]]) -> dict[str, Any]:
@@ -117,6 +144,43 @@ async def test_joindre_dpe_met_a_jour_les_mutations_rapprochees() -> None:
     action = bulk.call_args.args[1][0]
     assert action["_op_type"] == "update"
     assert action["doc"] == {"etiquette_dpe": "C"}
+
+
+async def test_joindre_dpe_marque_le_repli_posterieur() -> None:
+    """Le doc écrit doit porter la réserve quand aucun DPE antérieur n'existe."""
+    client = _client_avec_pit()
+    client.search.side_effect = [
+        _page(
+            [
+                {
+                    "_id": "m1",
+                    "sort": [1],
+                    "_source": {
+                        "identifiant_ban": "11069_0550_00025",
+                        "date_mutation": "2021-11-18",
+                    },
+                }
+            ]
+        ),
+        _page(
+            [
+                {
+                    "_source": {
+                        "identifiant_ban": "11069_0550_00025",
+                        "etiquette_dpe": "C",
+                        "date_etablissement": "2022-03-01",  # postérieur, dans la fenêtre
+                    }
+                }
+            ]
+        ),
+        _page([]),
+    ]
+
+    with patch("app.domain.dvf.jointure.async_bulk", new=AsyncMock(return_value=(1, []))) as bulk:
+        await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+
+    action = bulk.call_args.args[1][0]
+    assert action["doc"] == {"etiquette_dpe": "C", "etiquette_dpe_apres_vente": True}
 
 
 async def test_joindre_dpe_ne_traite_que_les_mutations_sans_etiquette() -> None:

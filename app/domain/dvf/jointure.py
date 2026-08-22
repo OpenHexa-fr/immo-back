@@ -17,13 +17,21 @@ logement sur trois restera donc sans étiquette, ce que l'interface doit
 présenter comme « non rapproché » et non comme « pas de DPE ».
 
 Une adresse porte souvent plusieurs diagnostics (immeuble entier, diagnostics
-successifs d'un même logement) : on retient le plus récent antérieur à la
-mutation, faute de pouvoir distinguer les logements entre eux.
+successifs d'un même logement) : on retient par priorité le plus récent
+antérieur à la mutation (fiable, décrit l'état au moment de la vente).
+
+Si aucun DPE antérieur n'existe — fréquent sur les millésimes 2021-2022, avant
+la généralisation du DPE — on accepte, à titre de repli, un DPE postérieur
+proche (fenêtre de `_FENETRE_POST_VENTE_JOURS`, 18 mois : le risque de
+rénovation entre-temps y reste limité). Ce repli est marqué explicitement
+(`etiquette_dpe_apres_vente`) pour que l'interface affiche la réserve plutôt
+que de présenter l'étiquette comme une certitude.
 """
 
 from __future__ import annotations
 
 import contextlib
+from datetime import date
 from typing import Any
 
 import structlog
@@ -41,6 +49,11 @@ _MAX_DPE_PAR_LOT = 10_000
 # En deçà, le géocodage BAN de l'ADEME est trop incertain pour fonder un
 # rapprochement (score médian observé : 0,65).
 _SCORE_BAN_MINIMUM = 0.5
+
+# Fenêtre de tolérance pour un DPE postérieur à la vente, en dernier recours.
+# 18 mois : assez court pour qu'une rénovation majeure entre-temps reste
+# l'exception plutôt que la norme.
+_FENETRE_POST_VENTE_JOURS = 548
 
 
 async def _dpe_par_identifiant(
@@ -69,23 +82,54 @@ async def _dpe_par_identifiant(
     return par_identifiant
 
 
-def _meilleur_dpe(diagnostics: list[dict[str, Any]], date_mutation: str) -> str | None:
-    """Étiquette du diagnostic le plus récent antérieur à la mutation.
-
-    Un DPE établi après la vente décrit un logement éventuellement rénové depuis :
-    le rattacher à la mutation donnerait une information fausse. À défaut de
-    diagnostic antérieur, on ne rapproche pas.
-    """
-    anterieurs = [
-        d
-        for d in diagnostics
-        if d.get("date_etablissement") and d["date_etablissement"] <= date_mutation
-    ]
-    if not anterieurs:
+def _parse_date(brut: object) -> date | None:
+    if not brut:
         return None
-    plus_recent = max(anterieurs, key=lambda d: str(d["date_etablissement"]))
-    etiquette = plus_recent.get("etiquette_dpe")
-    return str(etiquette) if etiquette else None
+    try:
+        return date.fromisoformat(str(brut)[:10])
+    except ValueError:
+        return None
+
+
+def _meilleur_dpe(
+    diagnostics: list[dict[str, Any]], date_mutation: str
+) -> tuple[str, bool] | None:
+    """Étiquette retenue pour la mutation, et `True` si elle vient d'un DPE postérieur.
+
+    Priorité au diagnostic antérieur (ou le jour même) le plus récent — c'est
+    celui qui décrit fidèlement l'état du bien au moment de la vente. À défaut,
+    on se rabat sur le diagnostic postérieur le plus proche, dans la fenêtre de
+    tolérance : mieux vaut une étiquette marquée incertaine que pas d'étiquette
+    du tout, tant que le doute reste visible pour l'utilisateur.
+    """
+    date_vente = _parse_date(date_mutation)
+    if date_vente is None:
+        return None
+
+    anterieurs: list[tuple[date, dict[str, Any]]] = []
+    posterieurs_proches: list[tuple[date, dict[str, Any]]] = []
+    for diagnostic in diagnostics:
+        date_dpe = _parse_date(diagnostic.get("date_etablissement"))
+        if date_dpe is None:
+            continue
+        if date_dpe <= date_vente:
+            anterieurs.append((date_dpe, diagnostic))
+        elif (date_dpe - date_vente).days <= _FENETRE_POST_VENTE_JOURS:
+            posterieurs_proches.append((date_dpe, diagnostic))
+
+    if anterieurs:
+        _, retenu = max(anterieurs, key=lambda paire: paire[0])
+        etiquette = retenu.get("etiquette_dpe")
+        return (str(etiquette), False) if etiquette else None
+
+    if posterieurs_proches:
+        # Le plus proche de la vente, donc le moins susceptible d'être
+        # précédé d'une rénovation.
+        _, retenu = min(posterieurs_proches, key=lambda paire: paire[0])
+        etiquette = retenu.get("etiquette_dpe")
+        return (str(etiquette), True) if etiquette else None
+
+    return None
 
 
 async def joindre_dpe(
@@ -154,15 +198,22 @@ async def joindre_dpe(
                 candidats = diagnostics.get(source["identifiant_ban"])
                 if not candidats:
                     continue
-                etiquette = _meilleur_dpe(candidats, str(source.get("date_mutation") or ""))
-                if etiquette is None:
+                resultat = _meilleur_dpe(candidats, str(source.get("date_mutation") or ""))
+                if resultat is None:
                     continue
+                etiquette, posterieur = resultat
+                doc: dict[str, Any] = {"etiquette_dpe": etiquette}
+                # Uniquement écrit quand pertinent : les documents déjà
+                # rapprochés via un DPE antérieur (avant ce lot) n'ont pas ce
+                # champ, ce qui équivaut à `False` côté lecture.
+                if posterieur:
+                    doc["etiquette_dpe_apres_vente"] = True
                 actions.append(
                     {
                         "_op_type": "update",
                         "_index": dvf_index,
                         "_id": hit["_id"],
-                        "doc": {"etiquette_dpe": etiquette},
+                        "doc": doc,
                     }
                 )
 
