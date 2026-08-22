@@ -6,7 +6,7 @@ from typing import Any
 from unittest.mock import AsyncMock, patch
 
 from app.domain.dvf.ingestion import _compute_identifiant_ban
-from app.domain.dvf.jointure import _meilleur_dpe, joindre_dpe
+from app.domain.dvf.jointure import _meilleur_dpe, historique_dpe_parcelle, joindre_dpe
 
 
 def test_identifiant_ban_suit_le_format_de_l_ademe() -> None:
@@ -321,3 +321,55 @@ async def test_les_echecs_bulk_reels_sont_comptes() -> None:
         rapproches, erreurs = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
 
     assert (rapproches, erreurs) == (0, 1)
+
+
+async def test_historique_dpe_parcelle_rassemble_les_identifiants_de_la_parcelle() -> None:
+    """Une parcelle n'a pas d'identifiant BAN propre : ses lots peuvent en
+    porter des différents (numéros de voie distincts sur un même ensemble)."""
+    client = AsyncMock()
+    client.search.side_effect = [
+        {
+            "hits": {
+                "hits": [
+                    {"_source": {"identifiant_ban": "59350_0001_00010"}},
+                    {"_source": {"identifiant_ban": "59350_0001_00012"}},
+                    {"_source": {"identifiant_ban": "59350_0001_00010"}},  # doublon
+                ]
+            }
+        },
+        {"hits": {"hits": [{"_source": {"numero_dpe": "X1", "etiquette_dpe": "C"}}]}},
+    ]
+
+    diagnostics = await historique_dpe_parcelle(
+        client, "openhexa-dvf", "openhexa-dpe", "59350000AB0042"
+    )
+
+    assert diagnostics == [{"numero_dpe": "X1", "etiquette_dpe": "C"}]
+    dpe_query = client.search.call_args_list[1].kwargs["query"]
+    assert dpe_query == {
+        "terms": {"identifiant_ban": ["59350_0001_00010", "59350_0001_00012"]}
+    }
+
+
+async def test_historique_dpe_parcelle_trie_du_plus_recent_au_plus_ancien() -> None:
+    client = AsyncMock()
+    client.search.side_effect = [
+        {"hits": {"hits": [{"_source": {"identifiant_ban": "x"}}]}},
+        {"hits": {"hits": []}},
+    ]
+
+    await historique_dpe_parcelle(client, "openhexa-dvf", "openhexa-dpe", "P1")
+
+    assert client.search.call_args_list[1].kwargs["sort"] == [{"date_etablissement": "desc"}]
+
+
+async def test_historique_dpe_parcelle_vide_sans_identifiant() -> None:
+    """Aucun appel DPE si la parcelle n'a aucune adresse rapprochable — les
+    terrains nus notamment, qui n'ont jamais d'identifiant BAN."""
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+
+    diagnostics = await historique_dpe_parcelle(client, "openhexa-dvf", "openhexa-dpe", "P1")
+
+    assert diagnostics == []
+    client.search.assert_called_once()

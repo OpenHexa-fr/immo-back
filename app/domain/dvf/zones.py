@@ -76,6 +76,12 @@ _FILTRE_BATI: dict[str, Any] = {"range": {"surface_reelle_bati": {"gt": 0}}}
 
 CATEGORIES = ("bati", "terrain")
 
+# Étiquettes considérées comme des passoires énergétiques (seuil réglementaire
+# français). C'est la lecture la plus lisible en choroplèthe : un pourcentage
+# unique par zone, comparable d'une zone à l'autre, plutôt que la répartition
+# complète des 7 lettres qui ne se prête pas à un dégradé de couleur simple.
+_ETIQUETTES_PASSOIRE = ["F", "G"]
+
 
 def _aggs_prix_par_categorie() -> dict[str, Any]:
     """Percentiles du prix au m², calculés séparément pour le bâti et le terrain."""
@@ -86,6 +92,19 @@ def _aggs_prix_par_categorie() -> dict[str, Any]:
             "filter": {"bool": {"must_not": [_FILTRE_BATI]}},
             "aggs": {"prix": percentiles},
         },
+    }
+
+
+def _aggs_dpe() -> dict[str, Any]:
+    """Part de passoires énergétiques parmi les mutations dotées d'une étiquette.
+
+    N'a de sens que pour le bâti (un DPE ne concerne jamais un terrain nu), mais
+    partage le même parcours composite que l'agrégation de prix — aucun aller-
+    retour Elasticsearch supplémentaire.
+    """
+    return {
+        "filter": {"exists": {"field": "etiquette_dpe"}},
+        "aggs": {"passoire": {"filter": {"terms": {"etiquette_dpe": _ETIQUETTES_PASSOIRE}}}},
     }
 
 
@@ -100,6 +119,16 @@ def _prix_par_categorie(bucket: dict[str, Any]) -> dict[str, Any]:
         champs[f"prix_m2_p75_{categorie}"] = _arrondi(valeurs["75.0"])
         champs[f"nb_mutations_{categorie}"] = sous_bucket["doc_count"]
     return champs
+
+
+def _stats_dpe(bucket: dict[str, Any]) -> dict[str, Any]:
+    """Extrait la part de passoires énergétiques d'un bucket `dpe`."""
+    sous_bucket = bucket["dpe"]
+    nb_avec_etiquette = sous_bucket["doc_count"]
+    if nb_avec_etiquette == 0:
+        return {"dpe_part_passoire": None, "dpe_nb_avec_etiquette": 0}
+    part = sous_bucket["passoire"]["doc_count"] / nb_avec_etiquette * 100
+    return {"dpe_part_passoire": round(part, 1), "dpe_nb_avec_etiquette": nb_avec_etiquette}
 
 
 def _arrondi(valeur: float | None) -> float | None:
@@ -169,6 +198,7 @@ async def _iter_zone_documents(
     sources.append({"code": {"terms": {"field": code_field}}})
 
     aggs = _aggs_prix_par_categorie()
+    aggs["dpe"] = _aggs_dpe()
     if label_field is not None:
         # Le nom de la commune n'existe pas comme clé d'agrégation (seul son code
         # INSEE en est une) : on le lit sur un document du bucket.
@@ -176,9 +206,12 @@ async def _iter_zone_documents(
 
     async for bucket in _iter_composite_buckets(client, dvf_index, sources, aggs):
         prix = _prix_par_categorie(bucket)
-        # Une zone sans médiane dans aucune des deux catégories n'a rien à
-        # colorer, quel que soit le mode d'affichage choisi.
-        if all(prix[f"prix_m2_median_{categorie}"] is None for categorie in CATEGORIES):
+        dpe = _stats_dpe(bucket)
+        # Une zone sans médiane dans aucune des deux catégories ni statistique
+        # DPE n'a rien à colorer, quel que soit le mode d'affichage choisi.
+        if all(prix[f"prix_m2_median_{categorie}"] is None for categorie in CATEGORIES) and dpe[
+            "dpe_nb_avec_etiquette"
+        ] == 0:
             continue
 
         code = bucket["key"]["code"]
@@ -198,6 +231,7 @@ async def _iter_zone_documents(
             "nb_mutations": bucket["doc_count"],
             "calcule_le": calcule_le,
             **prix,
+            **dpe,
         }
 
 

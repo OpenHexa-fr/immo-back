@@ -30,6 +30,8 @@ def _bucket(
     median: float | None = 2000.0,
     parent: str | None = None,
     label_commune: str | None = None,
+    dpe_avec_etiquette: int = 0,
+    dpe_passoire: int = 0,
 ) -> dict[str, Any]:
     bucket: dict[str, Any] = {
         "key": {"code": code},
@@ -39,6 +41,10 @@ def _bucket(
             "prix": {"values": {"25.0": 1500.0, "50.0": median, "75.0": 2500.0}},
         },
         "terrain": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+        "dpe": {
+            "doc_count": dpe_avec_etiquette,
+            "passoire": {"doc_count": dpe_passoire},
+        },
     }
     if parent is not None:
         bucket["key"]["parent"] = parent
@@ -87,6 +93,8 @@ async def test_compute_zones_builds_documents_with_deterministic_ids() -> None:
             "prix_m2_p25_terrain": None,
             "prix_m2_p75_terrain": None,
             "nb_mutations_terrain": 0,
+            "dpe_part_passoire": None,
+            "dpe_nb_avec_etiquette": 0,
         }
     ]
 
@@ -328,6 +336,7 @@ async def test_zone_sans_aucune_mediane_est_ignoree() -> None:
         "doc_count": 3,
         "bati": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
         "terrain": {"doc_count": 3, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+        "dpe": {"doc_count": 0, "passoire": {"doc_count": 0}},
     }
     client.search.side_effect = _sequence_recherches(_composite_page([vide]))
 
@@ -335,3 +344,49 @@ async def test_zone_sans_aucune_mediane_est_ignoree() -> None:
         await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
 
     assert bulk.call_count == 0
+
+
+async def test_zone_avec_dpe_calcule_la_part_de_passoires() -> None:
+    client = AsyncMock()
+    client.search.side_effect = _sequence_recherches(
+        _composite_page([_bucket("59", dpe_avec_etiquette=40, dpe_passoire=10)])
+    )
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(1, 0))) as bulk:
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    document = bulk.call_args_list[0].args[2][0]
+    assert document["dpe_part_passoire"] == 25.0
+    assert document["dpe_nb_avec_etiquette"] == 40
+
+
+async def test_zone_sans_dpe_n_a_pas_de_part_calculee() -> None:
+    """Diviser par zéro n'a pas de sens : la statistique reste absente, pas à 0 %."""
+    client = AsyncMock()
+    client.search.side_effect = _sequence_recherches(_composite_page([_bucket("59")]))
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(1, 0))) as bulk:
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    document = bulk.call_args_list[0].args[2][0]
+    assert document["dpe_part_passoire"] is None
+    assert document["dpe_nb_avec_etiquette"] == 0
+
+
+async def test_zone_sans_prix_mais_avec_dpe_est_conservee() -> None:
+    """Une zone sans médiane de prix mais avec des DPE ne doit pas être écartée."""
+    client = AsyncMock()
+    sans_prix = {
+        "key": {"code": "59"},
+        "doc_count": 5,
+        "bati": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+        "terrain": {"doc_count": 0, "prix": {"values": {"25.0": None, "50.0": None, "75.0": None}}},
+        "dpe": {"doc_count": 5, "passoire": {"doc_count": 1}},
+    }
+    client.search.side_effect = _sequence_recherches(_composite_page([sans_prix]))
+
+    with patch("app.domain.dvf.zones.bulk_index", new=AsyncMock(return_value=(1, 0))) as bulk:
+        await compute_zones(client, "openhexa-dvf", "openhexa-dvf-zones")
+
+    assert bulk.call_count == 1
+    assert bulk.call_args_list[0].args[2][0]["dpe_nb_avec_etiquette"] == 5

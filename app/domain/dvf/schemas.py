@@ -125,6 +125,29 @@ class ParcelleResponse(BaseModel):
     mutations: list[ParcelleMutation]
 
 
+class DPEHistoriqueEntry(BaseModel):
+    """Un diagnostic tel qu'établi, sans filtre de qualité ni de date.
+
+    Contrairement à `etiquette_dpe` sur `DVFTransaction` — le seul diagnostic
+    retenu par la jointure pour une vente donnée — cette entrée expose tous les
+    diagnostics connus à une adresse, pour que l'utilisateur juge lui-même de
+    leur pertinence (via la date et `score_ban`).
+    """
+
+    numero_dpe: str
+    date_etablissement: str | None = None
+    etiquette_dpe: str | None = None
+    etiquette_ges: str | None = None
+    surface_habitable: float | None = None
+    type_batiment: str | None = None
+    score_ban: float | None = None
+
+
+class ParcelleDpeHistoriqueResponse(BaseModel):
+    id_parcelle: str
+    diagnostics: list[DPEHistoriqueEntry]
+
+
 class PrixCarteBucket(BaseModel):
     """Agrégat de prix médian au m² pour une zone (département, commune ou section)."""
 
@@ -136,6 +159,11 @@ class PrixCarteBucket(BaseModel):
     prix_m2_p25: float | None = None
     prix_m2_p75: float | None = None
     nb_mutations: int
+    # Part de passoires énergétiques (%) parmi les mutations de la zone dotées
+    # d'une étiquette DPE, et effectif sur lequel ce taux est calculé — absents
+    # du repli à la volée, qui ne calcule pas cette statistique.
+    dpe_part_passoire: float | None = None
+    dpe_nb_avec_etiquette: int | None = None
 
 
 class PrixSeriePoint(BaseModel):
