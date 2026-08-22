@@ -23,6 +23,7 @@ mutation, faute de pouvoir distinguer les logements entre eux.
 
 from __future__ import annotations
 
+import contextlib
 from typing import Any
 
 import structlog
@@ -32,6 +33,9 @@ from elasticsearch.helpers import async_bulk
 logger = structlog.get_logger(__name__)
 
 _LOT_MUTATIONS = 1000
+
+# Durée de vie du point-in-time, renouvelée à chaque page.
+_PIT_DUREE = "10m"
 _MAX_DPE_PAR_LOT = 10_000
 
 # En deçà, le géocodage BAN de l'ADEME est trop incertain pour fonder un
@@ -89,67 +93,86 @@ async def joindre_dpe(
 ) -> tuple[int, int]:
     """Renseigne `etiquette_dpe` sur les mutations DVF rapprochables.
 
-    Ne traite que les mutations porteuses d'un identifiant BAN et encore
-    dépourvues d'étiquette : relancer la jointure ne refait donc pas le travail
-    déjà fait, et le coût décroît d'un passage à l'autre.
+    Retourne `(rapprochées, examinées)`. Attention : une mutation examinée sans
+    correspondance n'est **pas** une erreur — c'est le cas normal d'un bien sans
+    diagnostic connu à son adresse. Une première version retournait
+    `(rapprochées, examinées - rapprochées)`, que l'ordonnanceur interprétait
+    comme un décompte d'erreurs et qui faisait échouer le job à chaque passage.
+
+    Le parcours s'appuie sur un **point-in-time**. Sans lui, `search_after` sur
+    `_doc` dérive : la jointure écrit dans l'index qu'elle parcourt, chaque mise
+    à jour étant une suppression suivie d'une réinsertion, et l'ordre des
+    documents se réorganise sous le curseur. Constaté en production : le
+    parcours s'est interrompu après 7,8 M de mutations sur 12,5 M éligibles.
     """
     rapproches = 0
     examines = 0
     search_after: list[Any] | None = None
 
-    while True:
-        requete: dict[str, Any] = {
-            "bool": {
-                "filter": [{"exists": {"field": "identifiant_ban"}}],
-                "must_not": [{"exists": {"field": "etiquette_dpe"}}],
-            }
-        }
-        params: dict[str, Any] = {
-            "index": dvf_index,
-            "size": _LOT_MUTATIONS,
-            "source_includes": ["identifiant_ban", "date_mutation"],
-            "query": requete,
-            "sort": [{"_doc": "asc"}],
-        }
-        if search_after is not None:
-            params["search_after"] = search_after
+    pit = await client.open_point_in_time(index=dvf_index, keep_alive=_PIT_DUREE)
+    pit_id = pit["id"]
 
-        response = await client.search(**params)
-        hits = response["hits"]["hits"]
-        if not hits:
-            break
-        examines += len(hits)
-        search_after = hits[-1]["sort"]
-
-        identifiants = sorted({h["_source"]["identifiant_ban"] for h in hits})
-        diagnostics = await _dpe_par_identifiant(client, dpe_index, identifiants)
-
-        actions = []
-        for hit in hits:
-            source = hit["_source"]
-            candidats = diagnostics.get(source["identifiant_ban"])
-            if not candidats:
-                continue
-            etiquette = _meilleur_dpe(candidats, str(source.get("date_mutation") or ""))
-            if etiquette is None:
-                continue
-            actions.append(
-                {
-                    "_op_type": "update",
-                    "_index": dvf_index,
-                    "_id": hit["_id"],
-                    "doc": {"etiquette_dpe": etiquette},
+    try:
+        while True:
+            requete: dict[str, Any] = {
+                "bool": {
+                    "filter": [{"exists": {"field": "identifiant_ban"}}],
+                    "must_not": [{"exists": {"field": "etiquette_dpe"}}],
                 }
-            )
+            }
+            params: dict[str, Any] = {
+                "size": _LOT_MUTATIONS,
+                "source_includes": ["identifiant_ban", "date_mutation"],
+                "query": requete,
+                # `_shard_doc` n'est disponible qu'avec un point-in-time, et
+                # c'est le seul tri qui garantisse un ordre total stable.
+                "sort": [{"_shard_doc": "asc"}],
+                "pit": {"id": pit_id, "keep_alive": _PIT_DUREE},
+            }
+            if search_after is not None:
+                params["search_after"] = search_after
 
-        if actions:
-            succes, erreurs = await async_bulk(client, actions, raise_on_error=False)
-            rapproches += succes
-            # `async_bulk` renvoie soit la liste des erreurs, soit leur nombre,
-            # selon `stats_only` — même normalisation que `core.bulk_index`.
-            nb_erreurs = len(erreurs) if isinstance(erreurs, list) else int(erreurs)
-            if nb_erreurs:
-                logger.warning("dvf_dpe_jointure_erreurs", erreurs=nb_erreurs)
+            response = await client.search(**params)
+            hits = response["hits"]["hits"]
+            if not hits:
+                break
+            examines += len(hits)
+            search_after = hits[-1]["sort"]
+            pit_id = response.get("pit_id", pit_id)
+
+            identifiants = sorted({h["_source"]["identifiant_ban"] for h in hits})
+            diagnostics = await _dpe_par_identifiant(client, dpe_index, identifiants)
+
+            actions = []
+            for hit in hits:
+                source = hit["_source"]
+                candidats = diagnostics.get(source["identifiant_ban"])
+                if not candidats:
+                    continue
+                etiquette = _meilleur_dpe(candidats, str(source.get("date_mutation") or ""))
+                if etiquette is None:
+                    continue
+                actions.append(
+                    {
+                        "_op_type": "update",
+                        "_index": dvf_index,
+                        "_id": hit["_id"],
+                        "doc": {"etiquette_dpe": etiquette},
+                    }
+                )
+
+            if actions:
+                succes, erreurs = await async_bulk(client, actions, raise_on_error=False)
+                rapproches += succes
+                # `async_bulk` renvoie soit la liste des erreurs, soit leur
+                # nombre, selon `stats_only` — même normalisation que
+                # `core.bulk_index`.
+                nb_erreurs = len(erreurs) if isinstance(erreurs, list) else int(erreurs)
+                if nb_erreurs:
+                    logger.warning("dvf_dpe_jointure_erreurs", erreurs=nb_erreurs)
+    finally:
+        with contextlib.suppress(Exception):
+            await client.close_point_in_time(id=pit_id)
 
     logger.info("dvf_dpe_jointure_terminee", examines=examines, rapproches=rapproches)
-    return rapproches, examines - rapproches
+    return rapproches, examines

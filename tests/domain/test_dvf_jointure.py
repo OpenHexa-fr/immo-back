@@ -73,8 +73,14 @@ def _page(hits: list[dict[str, Any]]) -> dict[str, Any]:
     return {"hits": {"hits": hits}}
 
 
-async def test_joindre_dpe_met_a_jour_les_mutations_rapprochees() -> None:
+def _client_avec_pit() -> AsyncMock:
     client = AsyncMock()
+    client.open_point_in_time.return_value = {"id": "pit-1"}
+    return client
+
+
+async def test_joindre_dpe_met_a_jour_les_mutations_rapprochees() -> None:
+    client = _client_avec_pit()
     client.search.side_effect = [
         _page(
             [
@@ -115,7 +121,7 @@ async def test_joindre_dpe_met_a_jour_les_mutations_rapprochees() -> None:
 
 async def test_joindre_dpe_ne_traite_que_les_mutations_sans_etiquette() -> None:
     """Relancer la jointure ne doit pas refaire le travail déjà accompli."""
-    client = AsyncMock()
+    client = _client_avec_pit()
     client.search.side_effect = [_page([])]
 
     await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
@@ -126,7 +132,7 @@ async def test_joindre_dpe_ne_traite_que_les_mutations_sans_etiquette() -> None:
 
 
 async def test_joindre_dpe_ecarte_les_diagnostics_mal_geocodes() -> None:
-    client = AsyncMock()
+    client = _client_avec_pit()
     client.search.side_effect = [
         _page(
             [
@@ -145,3 +151,49 @@ async def test_joindre_dpe_ecarte_les_diagnostics_mal_geocodes() -> None:
 
     filtres = client.search.call_args_list[1].kwargs["query"]["bool"]["filter"]
     assert {"range": {"score_ban": {"gte": 0.5}}} in filtres
+
+
+async def test_le_parcours_utilise_un_point_in_time() -> None:
+    """Sans PIT, `search_after` dérive : la jointure écrit dans l'index qu'elle lit.
+
+    Constaté en production : le parcours s'est arrêté à 7,8 M de mutations sur
+    12,5 M éligibles.
+    """
+    client = _client_avec_pit()
+    client.search.side_effect = [_page([])]
+
+    await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+
+    client.open_point_in_time.assert_awaited_once()
+    params = client.search.call_args.kwargs
+    assert params["pit"]["id"] == "pit-1"
+    assert params["sort"] == [{"_shard_doc": "asc"}]
+    # Un PIT non refermé retient des segments : le nettoyage doit être garanti.
+    client.close_point_in_time.assert_awaited_once()
+
+
+async def test_une_mutation_sans_dpe_n_est_pas_une_erreur() -> None:
+    """Le second membre du retour compte les mutations examinées, pas des erreurs.
+
+    Une première version retournait `examinées - rapprochées`, que
+    l'ordonnanceur lisait comme un décompte d'erreurs : le job se déclarait en
+    échec à chaque passage alors qu'il avait réussi.
+    """
+    client = _client_avec_pit()
+    client.search.side_effect = [
+        _page(
+            [
+                {
+                    "_id": "m1",
+                    "sort": [1],
+                    "_source": {"identifiant_ban": "x", "date_mutation": "2024-01-01"},
+                }
+            ]
+        ),
+        _page([]),  # aucun DPE a cette adresse
+        _page([]),
+    ]
+
+    rapproches, examines = await joindre_dpe(client, "openhexa-dvf", "openhexa-dpe")
+
+    assert (rapproches, examines) == (0, 1)
