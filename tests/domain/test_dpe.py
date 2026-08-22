@@ -226,3 +226,66 @@ def test_les_champs_selectionnes_couvrent_le_document_produit() -> None:
 
     renseignes = {cle for cle, valeur in document.items() if valeur is not None}
     assert renseignes >= {"numero_dpe", "identifiant_ban", "date_reception", "etiquette_dpe"}
+
+
+def test_le_filtre_combine_date_et_departement() -> None:
+    from app.domain.dpe.ingestion import _filtre
+
+    assert _filtre(date(2026, 8, 3), "59") == (
+        "date_reception_dpe:[2026-08-03 TO *] AND code_departement_ban:59"
+    )
+    assert _filtre(None, "2A") == "code_departement_ban:2A"
+    assert _filtre(None, None) is None
+
+
+def test_la_liste_des_departements_couvre_metropole_corse_et_dom() -> None:
+    from app.domain.dpe.ingestion import DEPARTEMENTS
+
+    assert "01" in DEPARTEMENTS and "95" in DEPARTEMENTS
+    assert "2A" in DEPARTEMENTS and "2B" in DEPARTEMENTS
+    assert "20" not in DEPARTEMENTS  # la Corse n'a pas de code 20
+    assert "971" in DEPARTEMENTS and "976" in DEPARTEMENTS
+    assert len(DEPARTEMENTS) == 101
+
+
+async def test_la_moisson_complete_se_decoupe_par_departement() -> None:
+    """Le débit s'effondre à mesure que le curseur s'enfonce : chaque tranche le remet à zéro."""
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+    appels: list[str | None] = []
+
+    def _pages(*_args: Any, **kwargs: Any) -> AsyncIterator[list[dict[str, Any]]]:
+        appels.append(kwargs.get("departement"))
+
+        async def vide() -> AsyncIterator[list[dict[str, Any]]]:
+            return
+            yield []
+
+        return vide()
+
+    with patch("app.domain.dpe.ingestion.fetch_dpe_pages", new=_pages):
+        await ingest_dpe(client, "openhexa-dpe", "https://exemple.test", complet=True)
+
+    assert len(appels) == 101
+    assert appels[0] == "01"
+
+
+async def test_la_reprise_incrementale_ne_se_decoupe_pas() -> None:
+    """Quelques milliers de lignes n'ont rien à gagner à 101 requêtes séparées."""
+    client = AsyncMock()
+    client.search.return_value = {"hits": {"hits": []}}
+    appels: list[str | None] = []
+
+    def _pages(*_args: Any, **kwargs: Any) -> AsyncIterator[list[dict[str, Any]]]:
+        appels.append(kwargs.get("departement"))
+
+        async def vide() -> AsyncIterator[list[dict[str, Any]]]:
+            return
+            yield []
+
+        return vide()
+
+    with patch("app.domain.dpe.ingestion.fetch_dpe_pages", new=_pages):
+        await ingest_dpe(client, "openhexa-dpe", "https://exemple.test")
+
+    assert appels == [None]

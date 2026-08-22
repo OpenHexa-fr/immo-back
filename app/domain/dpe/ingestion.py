@@ -47,8 +47,18 @@ _CHAMPS_UTILES = (
 )
 
 
+def _filtre(depuis: date | None, departement: str | None) -> str | None:
+    """Assemble le filtre `qs` de data-fair à partir des critères actifs."""
+    clauses = []
+    if depuis is not None:
+        clauses.append(f"date_reception_dpe:[{depuis.isoformat()} TO *]")
+    if departement is not None:
+        clauses.append(f"code_departement_ban:{departement}")
+    return " AND ".join(clauses) if clauses else None
+
+
 async def fetch_dpe_pages(
-    source_url: str, depuis: date | None = None
+    source_url: str, depuis: date | None = None, departement: str | None = None
 ) -> AsyncIterator[list[dict[str, Any]]]:
     """Itère les pages de résultats de l'API data-fair ADEME via le curseur `next`.
 
@@ -56,6 +66,12 @@ async def fetch_dpe_pages(
     C'est ce qui rend une réingestion hebdomadaire tenable : le dataset complet
     dépasse 15 millions de lignes, quand une semaine en apporte quelques
     milliers.
+
+    `departement` restreint à un département. Mesuré sur l'API réelle, le débit
+    d'une moisson intégrale s'effondre à mesure que le curseur s'enfonce dans le
+    jeu de données : 32 000 lignes/min sur les premières centaines de milliers,
+    8 000/min au-delà du million. Découper par département fait repartir la
+    pagination de zéro à chaque tranche, et rend la reprise possible.
     """
     async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as http_client:
         next_url: str | None = f"{source_url}/lines"
@@ -63,8 +79,9 @@ async def fetch_dpe_pages(
             "size": _PAGE_SIZE,
             "select": ",".join(_CHAMPS_UTILES),
         }
-        if depuis is not None and params is not None:
-            params["qs"] = f"date_reception_dpe:[{depuis.isoformat()} TO *]"
+        filtre = _filtre(depuis, departement)
+        if filtre is not None and params is not None:
+            params["qs"] = filtre
         while next_url:
             response = await http_client.get(next_url, params=params)
             response.raise_for_status()
@@ -113,6 +130,20 @@ def _row_to_document(row: dict[str, Any]) -> dict[str, Any]:
 # apparaître dans le dataset après coup avec une date de réception antérieure ;
 # la reprendre est sans risque, les `_id` étant déterministes.
 _RECOUVREMENT_JOURS = 7
+
+# Codes départementaux français, tels que l'ADEME les renseigne dans
+# `code_departement_ban`. Métropole (avec la Corse en 2A/2B) puis DOM.
+DEPARTEMENTS: tuple[str, ...] = (
+    *(f"{n:02d}" for n in range(1, 20)),
+    "2A",
+    "2B",
+    *(f"{n:02d}" for n in range(21, 96)),
+    "971",
+    "972",
+    "973",
+    "974",
+    "976",
+)
 
 
 async def derniere_reception(client: AsyncElasticsearch, index_alias: str) -> date | None:
@@ -165,13 +196,30 @@ async def ingest_dpe(
 
     logger.info("dpe_ingestion_started", depuis=depuis.isoformat() if depuis else "complet")
 
+    # Une moisson intégrale se découpe par département ; une reprise
+    # incrémentale ne rapporte que quelques milliers de lignes et n'a rien à
+    # gagner au découpage.
+    tranches: tuple[str | None, ...] = DEPARTEMENTS if complet else (None,)
+
     total_success = 0
     total_errors = 0
-    async for page in fetch_dpe_pages(source_url, depuis=depuis):
-        documents = (_row_to_document(row) for row in page)
-        success, errors = await bulk_index(client, index_alias, documents)
-        total_success += success
-        total_errors += errors
+    for departement in tranches:
+        tranche_success = 0
+        tranche_errors = 0
+        async for page in fetch_dpe_pages(source_url, depuis=depuis, departement=departement):
+            documents = (_row_to_document(row) for row in page)
+            success, errors = await bulk_index(client, index_alias, documents)
+            tranche_success += success
+            tranche_errors += errors
+        total_success += tranche_success
+        total_errors += tranche_errors
+        if departement is not None:
+            logger.info(
+                "dpe_departement_ingere",
+                departement=departement,
+                success=tranche_success,
+                errors=tranche_errors,
+            )
 
     logger.info("dpe_ingestion_completed", success=total_success, errors=total_errors)
     return total_success, total_errors
