@@ -247,3 +247,61 @@ async def joindre_dpe(
         erreurs_bulk=erreurs_bulk,
     )
     return rapproches, erreurs_bulk
+
+
+# Une parcelle porte rarement plus de quelques adresses distinctes (lots
+# multiples sur un même immeuble) ; la borne protège d'un cas pathologique.
+_MAX_ADRESSES_PAR_PARCELLE = 200
+_MAX_DPE_HISTORIQUE = 200
+
+
+async def historique_dpe_parcelle(
+    client: AsyncElasticsearch, dvf_index: str, dpe_index: str, id_parcelle: str
+) -> list[dict[str, Any]]:
+    """Tous les diagnostics connus aux adresses d'une parcelle, du plus récent au plus ancien.
+
+    Contrairement à la jointure, qui ne retient qu'un DPE par mutation (le plus
+    pertinent pour dater la vente), cette fonction sert la vue « historique » :
+    aucun filtre de date ni de score, l'utilisateur voit tout ce qui existe à
+    cette adresse et juge lui-même de la pertinence de chaque diagnostic.
+
+    Une parcelle n'a pas d'identifiant BAN propre — seules les mutations DVF
+    qui la composent en portent un, potentiellement différent d'un lot à
+    l'autre (numéros de voie distincts sur un même ensemble bâti) : on
+    rassemble donc d'abord tous les identifiants vus sur cette parcelle.
+    """
+    reponse = await client.search(
+        index=dvf_index,
+        size=_MAX_ADRESSES_PAR_PARCELLE,
+        source_includes=["identifiant_ban"],
+        query={
+            "bool": {
+                "filter": [
+                    {"term": {"id_parcelle": id_parcelle}},
+                    {"exists": {"field": "identifiant_ban"}},
+                ]
+            }
+        },
+    )
+    identifiants = sorted(
+        {hit["_source"]["identifiant_ban"] for hit in reponse["hits"]["hits"]}
+    )
+    if not identifiants:
+        return []
+
+    reponse = await client.search(
+        index=dpe_index,
+        size=_MAX_DPE_HISTORIQUE,
+        source_includes=[
+            "numero_dpe",
+            "date_etablissement",
+            "etiquette_dpe",
+            "etiquette_ges",
+            "surface_habitable",
+            "type_batiment",
+            "score_ban",
+        ],
+        query={"terms": {"identifiant_ban": identifiants}},
+        sort=[{"date_etablissement": "desc"}],
+    )
+    return [hit["_source"] for hit in reponse["hits"]["hits"]]

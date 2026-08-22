@@ -64,3 +64,23 @@ def test_aplatir_ignore_une_categorie_absente() -> None:
     sans_terrain = {**_ZONE, "prix_m2_median_terrain": None}
 
     assert _aplatir(sans_terrain, "terrain") is None
+
+
+def test_aplatir_transmet_les_champs_dpe_quelle_que_soit_la_categorie() -> None:
+    """Un DPE ne concerne que le bâti, mais la statistique doit rester lisible
+    même quand on demande la catégorie terrain."""
+    zone_avec_dpe = {**_ZONE, "dpe_part_passoire": 12.5, "dpe_nb_avec_etiquette": 800}
+
+    for categorie in ("bati", "terrain"):
+        aplatie = _aplatir(zone_avec_dpe, categorie)
+        assert aplatie is not None
+        assert aplatie["dpe_part_passoire"] == 12.5
+        assert aplatie["dpe_nb_avec_etiquette"] == 800
+
+
+def test_aplatir_dpe_absent_reste_none() -> None:
+    aplatie = _aplatir(_ZONE, "bati")
+
+    assert aplatie is not None
+    assert aplatie["dpe_part_passoire"] is None
+    assert aplatie["dpe_nb_avec_etiquette"] is None

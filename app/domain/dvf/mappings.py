@@ -66,6 +66,10 @@ DVF_ZONES_MAPPING: dict[str, Any] = {
         "prix_m2_p75_terrain": FLOAT,
         "nb_mutations_terrain": INTEGER,
         "nb_mutations": INTEGER,
+        # Part de passoires énergétiques (étiquettes F/G) parmi les mutations
+        # dotées d'une étiquette DPE, pour la vue "DPE" de la choroplèthe.
+        "dpe_part_passoire": FLOAT,
+        "dpe_nb_avec_etiquette": INTEGER,
         "calcule_le": DATE,
     }
 }

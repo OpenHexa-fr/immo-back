@@ -10,11 +10,13 @@ from openhexa_core.elasticsearch.client import get_client
 from openhexa_core.pagination import decode_cursor
 
 from app.config import Settings, get_settings
+from app.domain.dvf.jointure import historique_dpe_parcelle
 from app.domain.dvf.schemas import (
     BBox,
     DVFSearchParams,
     DVFSearchResponse,
     DVFTransaction,
+    ParcelleDpeHistoriqueResponse,
     ParcelleMutation,
     ParcelleResponse,
     PrixCarteBucket,
@@ -60,6 +62,10 @@ def _aplatir(zone: dict[str, Any], categorie: Categorie) -> dict[str, Any] | Non
         "nb_mutations": zone.get(f"nb_mutations_{categorie}", 0),
         "calcule_le": zone.get("calcule_le"),
         "annee": zone.get("annee"),
+        # Statistique DPE : indépendante de la catégorie bâti/terrain (un DPE ne
+        # concerne que le bâti), donc transmise telle quelle.
+        "dpe_part_passoire": zone.get("dpe_part_passoire"),
+        "dpe_nb_avec_etiquette": zone.get("dpe_nb_avec_etiquette"),
     }
 
 
@@ -295,6 +301,28 @@ async def parcelle(
     return ParcelleResponse(
         id_parcelle=id_parcelle,
         mutations=[ParcelleMutation.model_validate(mutation) for mutation in mutations],
+    )
+
+
+@router.get("/parcelle/{id_parcelle}/dpe", response_model=ParcelleDpeHistoriqueResponse)
+async def parcelle_dpe(
+    id_parcelle: str,
+    client: AsyncElasticsearch = Depends(_es_client),
+    settings: Settings = Depends(get_settings),
+) -> ParcelleDpeHistoriqueResponse:
+    """Tous les diagnostics DPE connus aux adresses d'une parcelle, sans filtre.
+
+    À la différence d'`etiquette_dpe` sur les ventes (un seul DPE retenu par la
+    jointure, le plus pertinent pour dater la vente), cette route sert la vue
+    « historique » de la carte : chaque diagnostic trouvé à l'adresse, pour que
+    l'utilisateur juge lui-même de sa pertinence.
+    """
+    dvf_index = f"{settings.es_index_prefix}-dvf"
+    dpe_index = f"{settings.es_index_prefix}-dpe"
+    diagnostics = await historique_dpe_parcelle(client, dvf_index, dpe_index, id_parcelle)
+    return ParcelleDpeHistoriqueResponse(
+        id_parcelle=id_parcelle,
+        diagnostics=diagnostics,
     )
 
 
