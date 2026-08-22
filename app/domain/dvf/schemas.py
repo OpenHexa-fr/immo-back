@@ -72,6 +72,10 @@ class DVFTransaction(BaseDocument):
     prix_m2: float | None = None
     location: GeoPoint | None = None
     etiquette_dpe: str | None = None
+    # True si le DPE retenu a été établi après la vente (fenêtre de
+    # tolérance, cf. dvf/jointure.py) : le bien a pu être rénové entre-temps,
+    # l'étiquette n'est alors pas garantie représentative au moment de la vente.
+    etiquette_dpe_apres_vente: bool | None = None
 
 
 class DVFSearchParams(BaseModel):

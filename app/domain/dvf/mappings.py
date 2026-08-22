@@ -2,7 +2,15 @@
 
 from typing import Any
 
-from openhexa_core.elasticsearch.mappings import DATE, FLOAT, GEO_POINT, INTEGER, KEYWORD, TEXT
+from openhexa_core.elasticsearch.mappings import (
+    BOOLEAN,
+    DATE,
+    FLOAT,
+    GEO_POINT,
+    INTEGER,
+    KEYWORD,
+    TEXT,
+)
 
 DVF_MAPPING: dict[str, Any] = {
     "properties": {
@@ -25,6 +33,10 @@ DVF_MAPPING: dict[str, Any] = {
         "prix_m2": FLOAT,
         "location": GEO_POINT,
         "etiquette_dpe": KEYWORD,
+        # Absent = DPE antérieur ou égal à la vente (cas fiable) ; True = DPE
+        # postérieur accepté dans une fenêtre courte (cf. dvf/jointure.py) —
+        # l'interface doit alors signaler la réserve.
+        "etiquette_dpe_apres_vente": BOOLEAN,
     }
 }
 
