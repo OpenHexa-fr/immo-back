@@ -7,6 +7,9 @@ l'un comme l'autre peut être le premier à démarrer sur un cluster vierge.
 
 from __future__ import annotations
 
+import asyncio
+from typing import Any
+
 from elasticsearch import AsyncElasticsearch
 from openhexa_core.elasticsearch.index import create_index, ensure_alias
 
@@ -27,10 +30,26 @@ def alias_for(settings: Settings, domain: str) -> str:
     return f"{settings.es_index_prefix}-{domain}"
 
 
+async def _ensure_domain_index(
+    client: AsyncElasticsearch, settings: Settings, domain: str, mapping: dict[str, Any]
+) -> None:
+    alias = alias_for(settings, domain)
+    index_name = f"{alias}-000001"
+    await create_index(client, index_name, mapping)
+    await ensure_alias(client, alias, index_name)
+
+
 async def ensure_indices(client: AsyncElasticsearch, settings: Settings) -> None:
-    """Crée les index manquants et leurs alias ; met à jour les mappings existants."""
-    for domain, mapping in DOMAIN_MAPPINGS.items():
-        alias = alias_for(settings, domain)
-        index_name = f"{alias}-000001"
-        await create_index(client, index_name, mapping)
-        await ensure_alias(client, alias, index_name)
+    """Crée les index manquants et leurs alias ; met à jour les mappings existants.
+
+    Les domaines sont indépendants (index/alias distincts) : les traiter en
+    parallèle plutôt qu'en séquence évite d'accumuler 3×2 aller-retours
+    Elasticsearch sur le chemin critique du cold start (scale-to-zero), avant
+    que le serveur ne commence à répondre.
+    """
+    await asyncio.gather(
+        *(
+            _ensure_domain_index(client, settings, domain, mapping)
+            for domain, mapping in DOMAIN_MAPPINGS.items()
+        )
+    )
