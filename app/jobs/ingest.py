@@ -5,7 +5,7 @@ un parsing Polars d'un CSV national ou un crawl d'agrégation sur des centaines
 de milliers de sections cadastrales entrait en concurrence directe, CPU et
 mémoire, avec le trafic HTTP — au point d'avoir déjà provoqué un OOM sur le
 conteneur web. Ce module fournit le même travail sous forme de commande unique,
-destinée à être planifiée séparément (Azure Container Apps Job) :
+destinée à être planifiée séparément (cron ou tout autre ordonnanceur) :
 
     python -m app.jobs.ingest --source all
     python -m app.jobs.ingest --source dvf --source zones

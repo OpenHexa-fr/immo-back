@@ -1,0 +1,25 @@
+name: Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      # openhexa-core n'est pas encore publié sur PyPI : sans cette ligne,
+      # `pip install -e .` échoue à le résoudre.
+      - run: pip install "git+https://github.com/OpenHexa-fr/core.git@main"
+      - run: pip install -e ".[dev]"
+      - run: ruff check app tests
+      - run: mypy app
+      - run: pytest
