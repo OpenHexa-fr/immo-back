@@ -1,15 +1,17 @@
-# openhexa-core n'est pas encore publié sur PyPI : ce Dockerfile doit être buildé
-# depuis la racine du monorepo pour pouvoir installer core/ localement.
+# Image de l'API Immo. Le contexte de build est la racine du monorepo (core/ et
+# immo-back/ côte à côte), car core n'est pas encore publié comme module Go
+# versionné (voir le `replace` de go.mod).
 #   docker build -f immo-back/Dockerfile -t openhexa-immo-back .
-FROM python:3.11-slim
-WORKDIR /app
+FROM golang:1.24 AS build
+WORKDIR /src
+COPY core/ core/
+COPY immo-back/ immo-back/
+WORKDIR /src/immo-back
+RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /out/immo-back ./cmd/immo-back
 
-COPY core/ /core/
-RUN pip install --no-cache-dir /core
-
-COPY immo-back/pyproject.toml immo-back/README.md ./
-RUN pip install --no-cache-dir -e .
-
-COPY immo-back/app/ app/
-
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+# distroless/static embarque les certificats CA (HTTPS vers data.gouv.fr et
+# l'ADEME) et rien d'autre : pas de shell, pas de gestionnaire de paquets.
+FROM gcr.io/distroless/static-debian12:nonroot
+COPY --from=build /out/immo-back /immo-back
+EXPOSE 8000
+ENTRYPOINT ["/immo-back"]

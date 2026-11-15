@@ -8,18 +8,35 @@ on:
 permissions:
   contents: read
 
+env:
+  # go.mod référence core par `replace => ../core` (core n'est pas encore publié
+  # comme module versionné) : core est donc récupéré à côté de ce repo.
+  # Une fois core tagué, supprimer le `replace` de go.mod, cette variable et le
+  # checkout de core ci-dessous.
+  CORE_REF: main
+
 jobs:
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
-      # openhexa-core n'est pas encore publié sur PyPI : sans cette ligne,
-      # `pip install -e .` échoue à le résoudre.
-      - run: pip install "git+https://github.com/OpenHexa-fr/core.git@main"
-      - run: pip install -e ".[dev]"
-      - run: ruff check app tests
-      - run: mypy app
-      - run: pytest
+          path: immo-back
+      - uses: actions/checkout@v4
+        with:
+          repository: OpenHexa-fr/core
+          ref: ${{ env.CORE_REF }}
+          path: core
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: immo-back/go.mod
+          cache-dependency-path: immo-back/go.sum
+      - name: Format
+        working-directory: immo-back
+        run: test -z "$(gofmt -l .)"
+      - name: Vet
+        working-directory: immo-back
+        run: go vet ./...
+      - name: Tests
+        working-directory: immo-back
+        run: go test -race ./...
